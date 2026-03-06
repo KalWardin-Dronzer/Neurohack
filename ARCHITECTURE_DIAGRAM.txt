@@ -1,0 +1,57 @@
+LONG-FORM MEMORY SYSTEM ARCHITECTURE
+
+Mermaid Flowchart (paste into Mermaid Live Editor, GitHub, or markdown viewer):
+
+```mermaid
+flowchart TD
+    U[User Message] --> A[API: POST /sessions/{session_id}/turns]
+
+    subgraph FP[Fast Path (Synchronous, Low Latency)]
+        A --> B[Persist Turn in SQLite]
+        B --> C[Fetch Short-Term Buffer (last K turns)]
+        C --> D[Hybrid Retrieval]
+        D --> D1[Lexical Search: SQLite FTS5]
+        D --> D2[Semantic Similarity: Embeddings]
+        D --> D3[Ranking: semantic + lexical + recency + confidence]
+        D3 --> E[Response Generation with Memory Injection]
+        E --> F[Return Assistant Response]
+    end
+
+    A --> Q[Enqueue Extraction Task]
+
+    subgraph BG[Background Path (Asynchronous)]
+        Q --> W[Extraction Worker]
+        W --> X[Memory Candidate Extraction]
+        X --> Y[Conflict Handling / Supersession]
+        Y --> Z[Upsert Structured Memory]
+        Z --> Z1[Update Embedding Vector]
+        Z --> Z2[Update FTS Index]
+    end
+
+    Z --> D
+```
+
+Sequence (request lifecycle):
+
+1. Client sends user turn.
+2. System stores turn and retrieves relevant memories.
+3. System generates response and returns it immediately.
+4. System asynchronously extracts new memory from the same turn.
+5. Extracted memory is normalized, conflict-resolved, and indexed.
+6. Next turn benefits from updated memory without replaying full history.
+
+Core data objects:
+
+1. Turn
+   - `session_id`, `turn_id`, `role`, `content`, `created_at`
+2. Memory
+   - `memory_id`, `type`, `key`, `value`, `source_turn`, `confidence`, `status`, `supersedes_memory_id`
+3. Retrieval output
+   - top-k active memories with `score` and provenance fields
+
+Design goals met:
+
+1. Real-time response path independent from extraction latency.
+2. Persistence across restarts via SQLite.
+3. Scalable retrieval through selective top-k memory injection.
+4. Conflict-safe behavior for changing preferences over long conversations.
