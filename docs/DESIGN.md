@@ -230,10 +230,15 @@ order, whatever order the schema gives. Asked for keys `zebra`, `apple` and `man
 `memory_type`, `key`, `value` and so on, so the constraint forces a format it never saw. Under it, the student
 sometimes repeats one memory until the generation limit.
 
-RESULTS.md therefore runs the student through Ollama both ways, on every held-out session. Without the
-schema, its recall matches the bf16 student's, so 8-bit quantisation cost nothing measurable. With the schema,
-recall drops and some replies stay invalid. The recommended setting is `LLM_STRUCTURED_OUTPUT=false`. The
-extractor still validates every reply and asks once for a repair.
+RESULTS.md therefore runs the student through Ollama both ways, on every held-out session.
+
+- **Without the schema,** its recall matches the bf16 student's: +0.3 pts [-3.0, +3.4]. So 8-bit
+  quantisation cost nothing measurable.
+- **With the schema,** six sessions stayed invalid instead of one, and replies grew longer and slower. Recall
+  was 4.0 points lower, though that interval, [-8.5, +0.6], still includes zero.
+
+The recommended setting is therefore `LLM_STRUCTURED_OUTPUT=false`. The extractor still validates every reply
+and asks once for a repair.
 
 Through Ollama the student also runs several times faster than through `distill.serve` on the same GPU,
 because llama.cpp runs it with compiled kernels while transformers fell back to its reference implementation.
@@ -268,6 +273,11 @@ over the cached replies shows what went wrong before that point:
 
 Each failed session therefore cost two full-length generations, more than four minutes on this GPU. A full run
 of all 91 sessions would have taken about seven hours to show the same failure.
+
+Through Ollama, the same model could run on all 91 sessions, because its faster decoding brings a failed
+session down to about half a minute. With the schema constraint each token is valid JSON, but the constraint
+cannot stop the model repeating itself, so 69 of its replies still ran into the limit. That full run gives
+the fine-tuning effect under identical serving, which RESULTS.md reports as a paired difference.
 
 The tables are in RESULTS.md.
 

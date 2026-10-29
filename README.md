@@ -26,8 +26,9 @@ Recall covers all 1,535 questions with annotated evidence; brackets are 95% boot
 | Extractor | Evidence recall@10 on held-out conversations | Context tokens at k = 10 | Runs on |
 |---|---|---|---|
 | Teacher: `gemini-3.5-flash-lite` (API) | 68.7% [64.6, 72.8] | 235 | Gemini API |
-| Student: Qwen3.5-0.8B + LoRA (local) | 63.5% [59.2, 67.7] | 211 | RTX 3050 Laptop GPU, 33 s per session |
-| Base: Qwen3.5-0.8B, no fine-tuning (local) | not run: valid JSON in 1 of 15 sessions tried | n/a | RTX 3050 Laptop GPU, 265 s per session |
+| Student: Qwen3.5-0.8B + LoRA (transformers, bf16) | 63.5% [59.2, 67.7] | 211 | RTX 3050 Laptop GPU, 33 s per session |
+| Student: Qwen3.5-0.8B + LoRA (Ollama, Q8_0) | 63.8% [59.5, 68.0] | 212 | RTX 3050 Laptop GPU, 4 s per session |
+| Base: Qwen3.5-0.8B, no fine-tuning (Ollama, Q8_0, constrained) | 8.0% [5.8, 10.6] | 413 | RTX 3050 Laptop GPU, 33 s per session |
 | Raw-turn RAG (no extraction) | 61.2% [56.8, 65.5] | 397 | no extraction |
 
 The student is `Qwen/Qwen3.5-0.8B` fine-tuned with LoRA on the teacher's extractions from 6 conversations; the table covers the 3 conversations held out from training (425 questions). Training, the protocol and the paired differences are in [RESULTS.md](RESULTS.md#distilled-local-extractor).
@@ -124,7 +125,8 @@ Set these four:
 - `LLM_REASONING_EFFORT=none`, because by default Ollama turns on Qwen3.5's thinking mode, which changes the
   prompt the student was trained on;
 - `LLM_STRUCTURED_OUTPUT=false`, because Ollama's schema-constrained decoding writes keys in alphabetical
-  order, not the order the student learned, and that costs recall (RESULTS.md). Replies are still validated.
+  order, not the order the student learned. In the benchmark that left six sessions invalid instead of one,
+  and made extraction slower (RESULTS.md). Replies are still validated.
 
 **With transformers.** This route needs no conversion, but on Windows it is several times slower:
 
