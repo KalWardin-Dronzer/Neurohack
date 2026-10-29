@@ -9,7 +9,9 @@ It began as a hackathon entry (Neurohack, IIT Guwahati, **26th nationally**), pr
 [`v1.0-hackathon`](https://github.com/KalWardin-Dronzer/Neurohack/tree/v1.0-hackathon). v2 rebuilds it and measures it on the LoCoMo long-conversation
 benchmark against full-context prompting, raw-turn RAG and the original submission.
 
-<!-- RESULTS -->
+<!-- RESULTS:START -->
+*LoCoMo results appear here once `python -m bench.locomo report` has run.*
+<!-- RESULTS:END -->
 
 ## What changed from the hackathon version
 

@@ -7,6 +7,8 @@ RESULTS_DIR = Path("bench/results")
 RETRIEVAL_PATH = RESULTS_DIR / "locomo_retrieval.json"
 QA_PATH = RESULTS_DIR / "locomo_qa.json"
 RESULTS_MD = Path("RESULTS.md")
+README = Path("README.md")
+README_START, README_END = "<!-- RESULTS:START -->", "<!-- RESULTS:END -->"
 
 LABELS = {
     "full_context": "Full context (whole conversation in the prompt)",
@@ -182,15 +184,52 @@ def render(retrieval: dict | None, qa: dict | None) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
+def render_readme_summary(retrieval: dict | None, qa: dict | None) -> str:
+    """The README's headline table, built from the same estimates as RESULTS.md so the two cannot drift."""
+    if not retrieval or not qa:
+        return "*LoCoMo results appear here once `python -m bench.locomo report` has run.*"
+    lines = [
+        "## Results on LoCoMo",
+        "",
+        "| System | Evidence recall@10 | QA accuracy (LLM judge) | Prompt tokens per question |",
+        "|---|---|---|---|",
+    ]
+    for name in ("full_context", "turn_rag", "v1_as_shipped", "v2"):
+        recall = retrieval["systems"].get("v2_rrf" if name == "v2" else name)
+        recall_cell = pct(recall["by_k"]["10"]["recall"]) if recall else "n/a (reads everything)"
+        answer = qa["summary"][name]
+        lines.append(f"| {LABELS[name]} | {recall_cell} | {pct(answer['accuracy'])} | {answer['mean_prompt_tokens']:,.0f} |")
+    lines += [
+        "",
+        f"Recall covers all {retrieval['dataset']['questions_with_evidence']:,} questions with annotated evidence. QA "
+        f"covers a stratified subset of {qa['subset']['size']} (seed {qa['subset']['seed']}), answered by "
+        f"`{qa['models']['answer']}` and graded by `{qa['models']['judge']}`. Brackets are 95% bootstrap intervals. "
+        "Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and "
+        "[docs/DESIGN.md](docs/DESIGN.md).",
+    ]
+    return "\n".join(lines)
+
+
+def _with_readme_summary(readme: str, summary: str) -> str:
+    start = readme.index(README_START) + len(README_START)
+    end = readme.index(README_END)
+    return f"{readme[:start]}\n{summary}\n{readme[end:]}"
+
+
 def write_or_check(check: bool) -> int:
-    text = render(_load(RETRIEVAL_PATH), _load(QA_PATH))
+    retrieval, qa = _load(RETRIEVAL_PATH), _load(QA_PATH)
+    results_text = render(retrieval, qa)
+    readme_now = README.read_text(encoding="utf-8").replace("\r\n", "\n")
+    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa))
     if check:
-        current = RESULTS_MD.read_text(encoding="utf-8") if RESULTS_MD.exists() else ""
-        if current.replace("\r\n", "\n") != text:
-            print("RESULTS.md is out of date; run `python -m bench.locomo report`")
+        current = RESULTS_MD.read_text(encoding="utf-8").replace("\r\n", "\n") if RESULTS_MD.exists() else ""
+        stale = [name for name, ok in (("RESULTS.md", current == results_text), ("README.md", readme_now == readme_text)) if not ok]
+        if stale:
+            print(f"{' and '.join(stale)} out of date; run `python -m bench.locomo report`")
             return 1
         print("report in sync")
         return 0
-    RESULTS_MD.write_text(text, encoding="utf-8", newline="\n")
-    print(f"wrote {RESULTS_MD}")
+    RESULTS_MD.write_text(results_text, encoding="utf-8", newline="\n")
+    README.write_text(readme_text, encoding="utf-8", newline="\n")
+    print(f"wrote {RESULTS_MD} and the results block in {README}")
     return 0

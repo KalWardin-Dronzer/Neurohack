@@ -130,6 +130,17 @@ def test_report_renders_from_results_without_typed_numbers() -> None:
     assert "50.0% [40.0, 60.0]" in text
     assert text.endswith("\n") and not text.endswith("\n\n")
 
+    qa = {
+        "summary": {name: {"accuracy": estimate, "mean_prompt_tokens": 1234.0} for name in ("full_context", "turn_rag", "v1_as_shipped", "v2")},
+        "subset": {"size": 10, "seed": 1},
+        "models": {"answer": "a", "judge": "j"},
+    }
+    summary = report.render_readme_summary(retrieval, qa)
+    readme = f"intro\n{report.README_START}\nold\n{report.README_END}\nrest\n"
+    updated = report._with_readme_summary(readme, summary)
+    assert "old" not in updated and updated.startswith("intro\n") and updated.endswith(f"{report.README_END}\nrest\n")
+    assert "| 50.0% [40.0, 60.0] | 50.0% [40.0, 60.0] | 1,234 |" in updated
+
 
 def test_vendored_v1_matches_the_hackathon_tag() -> None:
     if subprocess.run(["git", "rev-parse", "--verify", "-q", "v1.0-hackathon"], cwd=ROOT, capture_output=True).returncode != 0:
