@@ -50,6 +50,30 @@ Memories whose cosine similarity to the question falls below the floor are never
 
 1,769 active memories from 272 sessions (6.5 per session; 31% events), citing 1.33 evidence turns each on average. Every memory cites at least one valid turn. v1's regex extractor stored 300 memories from the same 5,882 turns.
 
+## Distilled local extractor
+
+`Qwen/Qwen3.5-0.8B` (revision `2fc0636`) was fine-tuned with LoRA on the teacher's extractions from 151 sessions of 6 conversations, with conv-48 for validation. The table covers the held-out conversations conv-41, conv-44, conv-47: 91 sessions and 425 questions with evidence, which no model was tuned on. Every row stores memories in the same v2 engine and retrieves them with the same RRF settings; only the extractor differs. The local models ran through `distill.serve` (transformers, bf16, greedy decoding, no output constraints) on an NVIDIA GeForce RTX 3050 Laptop GPU.
+
+| Extractor | Recall@5 | Recall@10 | Recall@20 | Context tokens at k=10 | Memories per session | Cited turns vs teacher (precision / recall) | Sessions with invalid output | Seconds per session (p50) |
+|---|---|---|---|---|---|---|---|---|
+| Teacher: `gemini-3.5-flash-lite` (API) | 61.5% [57.1, 65.8] | 68.7% [64.6, 72.8] | 73.9% [70.0, 77.7] | 235 | 6.5 | reference | 0 of 91 | n/a |
+| Student: Qwen3.5-0.8B + LoRA (local) | 56.1% [51.7, 60.4] | 63.5% [59.2, 67.7] | 69.6% [65.5, 73.5] | 211 | 6.8 | 78% / 77% | 0 of 91 | 32.9 |
+| Base: Qwen3.5-0.8B, no fine-tuning (local) | not run (probe) | not run (probe) | not run (probe) | n/a | 0.0 | 0% / 0% | 14 of 15 | 265.2 |
+| Regex rules (no model) | 2.8% [1.5, 4.4] | 3.7% [2.1, 5.5] | 4.1% [2.4, 6.0] | 144 | 1.1 | 24% / 4% | 0 of 91 | n/a |
+| Raw-turn RAG (no extraction) | 49.2% [44.8, 53.8] | 61.2% [56.8, 65.5] | 70.2% [66.1, 74.1] | 397 | n/a | n/a | n/a | n/a |
+
+The untuned base model is a probe: it ran on the first 5 sessions of each held-out conversation (15 of 91), so it has no recall figures. 14 of its 15 replies were still invalid after the repair request. Its requests averaged 1,978 output tokens, against the generation limit of 2,048. Each session therefore took 4.4 minutes at the median, which made a full run impractical.
+
+Paired differences in recall@10 on the same questions (an interval that excludes 0 is a real gap):
+
+- student minus teacher: -5.2 pts [-9.6, -1.0]
+- student minus regex rules: +59.8 pts [+55.3, +64.2]
+- student minus raw-turn RAG: +2.3 pts [-2.4, +7.2]
+
+Training: 3 epochs over 151 sessions (75,893 reply tokens), batches of 8, learning rate 0.0002. LoRA rank 16 (alpha 32, dropout 0.05) on q_proj, k_proj, v_proj, o_proj, in_proj_qkv, in_proj_z, out_proj, gate_proj, up_proj, down_proj: 10,223,616 trainable parameters, 1.4% of the 752M in the model. Validation loss per reply token was 0.327 for the base model and 0.193, 0.189, 0.188 after each epoch; the epoch 3 adapter is the one evaluated. Training took 33 minutes with a peak of 2.7 GB of GPU memory.
+
+The student wrote 528 tokens per session at 14.3 tokens per second (60.0 s per session at p95). Invalid output means the reply still failed schema validation after one repair request; such a session stores no memories, and it counts against recall rather than being dropped.
+
 ## Configuration
 
 - Embeddings: `BAAI/bge-small-en-v1.5`; RRF k = 60; dense and BM25 candidate lists of 20.

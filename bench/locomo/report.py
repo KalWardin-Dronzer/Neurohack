@@ -202,6 +202,7 @@ def _distill_section(data: dict) -> list[str]:
             ]
         lines.append(f"| {_extractor_label(name, data)} | " + " | ".join(cells) + " |")
 
+    short = {"teacher": "teacher", "student": "student", "base": "untuned base model", "regex": "regex rules", "turn_rag": "raw-turn RAG"}
     probes = [name for name, stats in data["extraction"].items() if not stats["complete"]]
     for name in probes:
         stats = data["extraction"][name]
@@ -209,16 +210,15 @@ def _distill_section(data: dict) -> list[str]:
         per_conversation = stats["sessions"] // len(test["conversations"])
         lines += [
             "",
-            f"The {_extractor_label(name, data).split(': ', 1)[-1].split(' (')[0]} row is a probe: it ran on the first "
-            f"{per_conversation} sessions of each held-out conversation ({stats['sessions']} of {stats['sessions_in_conversations']}), "
-            f"so it has no recall figures. {stats['invalid_output_sessions']} of its {stats['sessions']} replies were still "
-            f"invalid after the repair request. Its requests averaged {latency['completion_tokens_per_call']:,.0f} output "
-            f"tokens, against the generation limit of {models['generation_limit']:,}. Each session therefore took "
+            f"The {short[name]} is a probe: it ran on the first {per_conversation} sessions of each held-out conversation "
+            f"({stats['sessions']} of {stats['sessions_in_conversations']}), so it has no recall figures. "
+            f"{stats['invalid_output_sessions']} of its {stats['sessions']} replies were still invalid after the repair "
+            f"request. Its requests averaged {latency['completion_tokens_per_call']:,.0f} output tokens, against the "
+            f"generation limit of {models['generation_limit']:,}. Each session therefore took "
             f"{latency['seconds_p50'] / 60:.1f} minutes at the median, which made a full run impractical.",
         ]
 
     lines += ["", "Paired differences in recall@10 on the same questions (an interval that excludes 0 is a real gap):", ""]
-    short = {"teacher": "teacher", "base": "untuned base model", "regex": "regex rules", "turn_rag": "raw-turn RAG"}
     for key, estimate in data["paired_recall_at_10_differences"].items():
         lines.append(f"- student minus {short[key.split('_minus_', 1)[1]]}: {signed_pct(estimate)}")
 

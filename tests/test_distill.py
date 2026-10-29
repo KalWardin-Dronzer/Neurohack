@@ -274,7 +274,7 @@ def test_distill_report_renders_every_extractor_and_the_readme_table() -> None:
     distill["extraction"]["base"] = dict(stats, complete=False, sessions=2, invalid_output_sessions=2, latency=dict(stats["latency"], seconds_p50=264.0))
     text = "\n".join(report._distill_section(distill))
     assert "| Base: Small-1B, no fine-tuning (local) | not run (probe) | not run (probe) | not run (probe) | n/a |" in text
-    assert "ran on the first 1 sessions of each held-out conversation (2 of 4)" in text
+    assert "The untuned base model is a probe: it ran on the first 1 sessions of each held-out conversation (2 of 4)" in text
     assert "averaged 450 output tokens, against the generation limit of 2,048" in text and "took 4.4 minutes" in text
     readme = "\n".join(report._readme_distill(distill))
     assert "| Base: Small-1B, no fine-tuning (local) | not run: valid JSON in 0 of 2 sessions tried | n/a |" in readme

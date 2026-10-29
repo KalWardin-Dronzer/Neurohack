@@ -20,6 +20,17 @@ original submission.
 | Neurohack v2 (LLM extraction, RRF retrieval) | 65.7% [63.5, 67.9] | 228 |
 
 Recall covers all 1,535 questions with annotated evidence; brackets are 95% bootstrap intervals. LLM-judged question answering on a stratified subset is still running within the free-tier quota. Per-category tables, ablations and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
+
+### A distilled extractor that runs on a laptop
+
+| Extractor | Evidence recall@10 on held-out conversations | Context tokens at k = 10 | Runs on |
+|---|---|---|---|
+| Teacher: `gemini-3.5-flash-lite` (API) | 68.7% [64.6, 72.8] | 235 | Gemini API |
+| Student: Qwen3.5-0.8B + LoRA (local) | 63.5% [59.2, 67.7] | 211 | RTX 3050 Laptop GPU, 33 s per session |
+| Base: Qwen3.5-0.8B, no fine-tuning (local) | not run: valid JSON in 1 of 15 sessions tried | n/a | RTX 3050 Laptop GPU, 265 s per session |
+| Raw-turn RAG (no extraction) | 61.2% [56.8, 65.5] | 397 | no extraction |
+
+The student is `Qwen/Qwen3.5-0.8B` fine-tuned with LoRA on the teacher's extractions from 6 conversations; the table covers the 3 conversations held out from training (425 questions). Training, the protocol and the paired differences are in [RESULTS.md](RESULTS.md#distilled-local-extractor).
 <!-- RESULTS:END -->
 
 ## What changed from the hackathon version
