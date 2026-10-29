@@ -65,7 +65,7 @@ class HealthResponse(BaseModel):
     retrieval: Optional[str] = None
 
 
-class EvaluationReport(BaseModel):
+class SmokeTestReport(BaseModel):
     recall_rate: float
     retrieval_relevance: float
     latency_p50_ms: float

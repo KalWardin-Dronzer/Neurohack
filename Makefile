@@ -1,4 +1,4 @@
-.PHONY: install run test demo eval
+.PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-report
 
 install:
 	python -m pip install -r requirements.txt
@@ -12,5 +12,20 @@ test:
 demo:
 	python -m scripts.run_demo
 
-eval:
-	python -m scripts.run_evaluation
+smoke:
+	python -m scripts.run_smoke_test
+
+bench-download:
+	python -m bench.locomo download
+
+bench-ingest:
+	python -m bench.locomo ingest
+
+bench-retrieval:
+	python -m bench.locomo retrieval
+
+bench-qa:
+	python -m bench.locomo qa
+
+bench-report:
+	python -m bench.locomo report

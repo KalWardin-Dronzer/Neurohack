@@ -7,7 +7,8 @@ from app.memory.service import MemoryEngine
 
 
 def build_demo_settings() -> Settings:
-    return replace(get_settings(), database_path="data/demo_memory.db")
+    # 1,000 scripted turns: regex extraction so the demo never spends LLM calls.
+    return replace(get_settings(), database_path="data/demo_memory.db", extractor="regex", enable_llm_response=False)
 
 
 def run_demo() -> None:

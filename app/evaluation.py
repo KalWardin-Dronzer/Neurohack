@@ -1,3 +1,9 @@
+"""A three-probe smoke test of the live pipeline.
+
+The probes are phrased the way the regex extractor expects and the filler turns contain nothing to remember,
+so passing shows the plumbing works, not that recall is good. The measured evaluation is the LoCoMo harness
+in bench/locomo.
+"""
 from __future__ import annotations
 
 from dataclasses import dataclass
@@ -56,7 +62,7 @@ def build_scenarios() -> list[Scenario]:
     ]
 
 
-def run_benchmark(engine: MemoryEngine) -> dict[str, float | int]:
+def run_smoke_test(engine: MemoryEngine) -> dict[str, float | int]:
     scenarios = build_scenarios()
 
     latencies: list[float] = []

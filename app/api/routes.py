@@ -2,13 +2,13 @@ from __future__ import annotations
 
 from fastapi import APIRouter, Query, Request
 
-from app.evaluation import run_benchmark
+from app.evaluation import run_smoke_test
 from app.schemas import (
-    EvaluationReport,
     FlushResponse,
     HealthResponse,
     MemoryRecord,
     MemoryListResponse,
+    SmokeTestReport,
     TurnRequest,
     TurnResponse,
 )
@@ -52,8 +52,8 @@ def flush(session_id: str, request: Request) -> FlushResponse:
     return FlushResponse(session_id=session_id, pending_tasks=pending)
 
 
-@router.post("/evaluate", response_model=EvaluationReport)
-def evaluate(request: Request) -> EvaluationReport:
+@router.post("/smoke-test", response_model=SmokeTestReport)
+def smoke_test(request: Request) -> SmokeTestReport:
     engine = request.app.state.memory_engine
-    report = run_benchmark(engine)
-    return EvaluationReport(**report)
+    report = run_smoke_test(engine)
+    return SmokeTestReport(**report)
