@@ -1,5 +1,10 @@
 # Submission Packet: Long-Form Memory System
 
+> **Historical document.** This is the packet submitted to Neurohack (IIT Guwahati), where the project placed
+> 26th nationally. It describes the code at tag `v1.0-hackathon`. Its "benchmark" figures come from a
+> three-probe check that v2 renamed a smoke test, and they do not measure recall on real conversations.
+> See [README.md](../../README.md) and [RESULTS.md](../../RESULTS.md) for v2 and its LoCoMo evaluation.
+
 ## 1. Challenge Addressed
 Build a real-time memory system that recalls and applies information introduced at early turns (for example, turn 1) at much later turns (for example, turn 1,000), without replaying full conversation history and without prompt growth.
 

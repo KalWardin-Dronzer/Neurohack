@@ -1,57 +1,53 @@
-LONG-FORM MEMORY SYSTEM ARCHITECTURE
+LONG-FORM MEMORY SYSTEM ARCHITECTURE (v2)
 
-Mermaid Flowchart (paste into Mermaid Live Editor, GitHub, or markdown viewer):
+Mermaid flowchart (paste into Mermaid Live Editor, GitHub, or any markdown viewer):
 
 ```mermaid
 flowchart TD
-    U[User Message] --> A[API: POST /sessions/{session_id}/turns]
+    U[User turn] --> A["POST /sessions/{session_id}/turns"]
 
-    subgraph FP[Fast Path (Synchronous, Low Latency)]
-        A --> B[Persist Turn in SQLite]
-        B --> C[Fetch Short-Term Buffer (last K turns)]
-        C --> D[Hybrid Retrieval]
-        D --> D1[Lexical Search: SQLite FTS5]
-        D --> D2[Semantic Similarity: Embeddings]
-        D --> D3[Ranking: semantic + lexical + recency + confidence]
-        D3 --> E[Response Generation with Memory Injection]
-        E --> F[Return Assistant Response]
+    subgraph FP[Fast path: synchronous]
+        A --> B[Persist turn in SQLite]
+        B --> C[Short-term window: last K turns]
+        C --> D1["Dense ranking: bge-small-en-v1.5 cosine over a cached float32 matrix"]
+        C --> D2["Lexical ranking: SQLite FTS5 BM25 with Porter stemming"]
+        D1 --> F[Reciprocal Rank Fusion]
+        D2 --> F
+        F --> G["One value per subject+key slot, optional similarity floor, top k"]
+        G --> E[Reply: LLM with dated memories, or rule-based fallback]
     end
 
-    A --> Q[Enqueue Extraction Task]
+    A --> Q[Queue extraction task]
 
-    subgraph BG[Background Path (Asynchronous)]
-        Q --> W[Extraction Worker]
-        W --> X[Memory Candidate Extraction]
-        X --> Y[Conflict Handling / Supersession]
-        Y --> Z[Upsert Structured Memory]
-        Z --> Z1[Update Embedding Vector]
-        Z --> Z2[Update FTS Index]
+    subgraph BG[Background worker]
+        Q --> X["LLM structured extraction: JSON schema, Pydantic, evidence ids, ISO dates"]
+        X -->|LLM unavailable| R[Regex fallback]
+        X --> Y["Upsert: events accumulate; facts supersede within subject+key"]
+        R --> Y
+        Y --> Z1[Embed and store vector tagged with its model]
+        Y --> Z2[Update FTS5 index]
     end
 
-    Z --> D
+    subgraph BATCH[Batch ingestion, used by the LoCoMo benchmark]
+        S[One session of turns and its date] --> X
+    end
+
+    Z1 --> D1
+    Z2 --> D2
 ```
 
-Sequence (request lifecycle):
+Request lifecycle:
 
-1. Client sends user turn.
-2. System stores turn and retrieves relevant memories.
-3. System generates response and returns it immediately.
-4. System asynchronously extracts new memory from the same turn.
-5. Extracted memory is normalized, conflict-resolved, and indexed.
-6. Next turn benefits from updated memory without replaying full history.
+1. The client sends a user turn.
+2. The turn is stored, and the most relevant memories are retrieved by fusing the dense and BM25 rankings.
+3. A reply is generated with those memories and returned immediately.
+4. A background worker extracts typed memories from the turn, each citing the turns it came from.
+5. A new value for an existing subject+key slot deprecates the old one; events accumulate.
+6. The next turn retrieves from the updated store without replaying history.
 
-Core data objects:
+Core records:
 
-1. Turn
-   - `session_id`, `turn_id`, `role`, `content`, `created_at`
-2. Memory
-   - `memory_id`, `type`, `key`, `value`, `source_turn`, `confidence`, `status`, `supersedes_memory_id`
-3. Retrieval output
-   - top-k active memories with `score` and provenance fields
-
-Design goals met:
-
-1. Real-time response path independent from extraction latency.
-2. Persistence across restarts via SQLite.
-3. Scalable retrieval through selective top-k memory injection.
-4. Conflict-safe behavior for changing preferences over long conversations.
+1. Turn: `session_id`, `turn_id`, `role`, `content`, `created_at`
+2. Memory: `memory_id`, `type`, `subject`, `key`, `value`, `event_date`, `evidence`, `source_turn`,
+   `confidence`, `status`, `supersedes_memory_id`
+3. Embedding: `memory_id`, `model_id`, `dim`, float32 `vector`
