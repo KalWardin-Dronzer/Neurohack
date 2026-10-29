@@ -16,6 +16,7 @@ import csv
 import json
 import logging
 import random
+import re
 import subprocess
 import sys
 from collections import Counter
@@ -67,7 +68,15 @@ def _is_local(url: str) -> bool:
     return urlparse(url).hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 
-def _client(settings, model: str, rpm: float, base_url: str | None = None, timeout_s: float = 120.0, reasoning_effort: str | None = None):
+def _client(
+    settings,
+    model: str,
+    rpm: float,
+    base_url: str | None = None,
+    timeout_s: float = 120.0,
+    reasoning_effort: str | None = None,
+    structured_output: bool = True,
+):
     from app.llm.client import LLMClient
 
     url = base_url or settings.llm_base_url
@@ -75,7 +84,15 @@ def _client(settings, model: str, rpm: float, base_url: str | None = None, timeo
     if not key and not _is_local(url):
         sys.exit("LLM_API_KEY is empty: put it in .env (see .env.example)")
     return LLMClient(
-        url, key, model, cache_path=str(CACHE), requests_per_minute=rpm or None, max_retries=8, timeout_s=timeout_s, reasoning_effort=reasoning_effort
+        url,
+        key,
+        model,
+        cache_path=str(CACHE),
+        requests_per_minute=rpm or None,
+        max_retries=8,
+        timeout_s=timeout_s,
+        reasoning_effort=reasoning_effort,
+        structured_output=structured_output,
     )
 
 
@@ -164,7 +181,7 @@ def cmd_ingest(args) -> int:
             sys.exit(f"unknown conversations: {sorted(unknown)}")
         conversations = [c for c in conversations if c.sample_id in wanted]
     settings = _settings()
-    client = _client(settings, args.model, args.rpm, base_url=args.base_url, timeout_s=args.timeout, reasoning_effort=args.reasoning_effort)
+    client = _client(settings, args.model, args.rpm, base_url=args.base_url, timeout_s=args.timeout, reasoning_effort=args.reasoning_effort, structured_output=not args.no_schema)
     embedder = build_embedder(settings)
     v2 = MemoryV2(
         settings,
@@ -338,12 +355,23 @@ def cmd_distill_eval(args) -> int:
         "base": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / args.base),
         "regex": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / "regex", extractor_factory=RegexExtractor),
     }
+    # The same two models exported to GGUF and served by Ollama, when those runs exist: schema-constrained
+    # (ollama-*), and for the student also without a schema (ollama-free-*), since Ollama's constrained decoding
+    # writes keys in alphabetical order rather than the order the student learned.
+    for name, prefix, model in (
+        ("student_ollama", "ollama", args.student),
+        ("student_ollama_free", "ollama-free", args.student),
+        ("base_ollama", "ollama", args.base),
+    ):
+        if (distill.INGEST_DIR / f"{prefix}-{model}").exists():
+            stores[name] = MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / f"{prefix}-{model}")
     # A model may be probed on each conversation's first sessions instead of all of them (the untuned base model
     # writes until the token limit, so a full run is impractical). A probed model gets extraction statistics
     # over the sessions it ran, but no recall: questions about the sessions it skipped would count as misses.
-    probed = {name for name in ("student", "base") if not all(stores[name].is_ingested(c) for c in test)}
-    if "student" in probed:
-        sys.exit("the student must be ingested on every held-out session; see `make bench-distill-student`")
+    llm_runs = [name for name in stores if name not in ("teacher", "regex")]
+    probed = {name for name in llm_runs if not all(stores[name].is_ingested(c) for c in test)}
+    if probed - {"base", "base_ollama"}:
+        sys.exit(f"{sorted(probed - {'base', 'base_ollama'})} must be ingested on every held-out session; see `make bench-distill-student`")
     try:
         for question in data.evaluable_questions(test):
             queries.get(question.text)
@@ -354,15 +382,13 @@ def cmd_distill_eval(args) -> int:
                 store.prepare(conversation, first_sessions=ran)  # LLM extractors must already be ingested; regex is built here
         retrievers = {"turn_rag": turn_rag.retrieve}
         retrievers.update({name: (lambda c, q, k, store=store: store.retrieve(c, q, k, mode="rrf")) for name, store in stores.items() if name not in probed})
-        baselines = tuple(name for name in ("teacher", "base", "regex", "turn_rag") if name in retrievers)
-        systems, differences = compare(test, retrievers, "student", baselines)
+        pairs = [("student", other) for other in ("teacher", "base", "regex", "turn_rag")]
+        # Quantisation alone, then the schema constraint, then fine-tuning under identical serving.
+        pairs += [("student_ollama_free", "student"), ("student_ollama", "student_ollama_free"), ("student_ollama", "base_ollama")]
+        systems, differences = compare(test, retrievers, [(a, b) for a, b in pairs if a in retrievers and b in retrievers])
         teacher_outputs = read_outputs(V2_DIR / "extractions.jsonl", test_ids)
-        outputs = {
-            "teacher": teacher_outputs,
-            "student": read_outputs(stores["student"].runs_dir / "extractions.jsonl", test_ids),
-            "base": read_outputs(stores["base"].runs_dir / "extractions.jsonl", test_ids),
-            "regex": regex_outputs(test),
-        }
+        outputs = {"teacher": teacher_outputs, "regex": regex_outputs(test)}
+        outputs.update({name: read_outputs(stores[name].runs_dir / "extractions.jsonl", test_ids) for name in llm_runs})
         extraction = {}
         for name, store in stores.items():
             attempted = {(c.sample_id, number) for c in test for number in store.progress(c.sample_id)["sessions"]}
@@ -376,6 +402,18 @@ def cmd_distill_eval(args) -> int:
             store.close()
 
     evidence_questions = [q for q in data.evaluable_questions(test) if q.evidence]
+    ollama = {}
+    if any(name.endswith("_ollama") for name in stores):
+        export = json.loads((distill.RUN_DIR / "export.json").read_text(encoding="utf-8"))
+        found = re.search(r"\d+\.\d+\.\d+", subprocess.run(["ollama", "--version"], capture_output=True, text=True).stdout)
+        version = found.group(0) if found else "unknown"
+        ollama = {
+            "serving_ollama": f"Ollama {version} (a {export['gguf_type'].upper()} GGUF from llama.cpp's converter, greedy decoding, "
+            "thinking off; in rows marked constrained, Ollama also constrains decoding to the JSON schema)",
+            "ollama_version": version,
+            "llama_cpp_commit": export["llama_cpp_commit"],
+            "gguf_sha256": {role: export[role]["gguf_sha256"] for role in ("student", "base")},
+        }
     _write_json(
         report.DISTILL_PATH,
         {
@@ -397,6 +435,7 @@ def cmd_distill_eval(args) -> int:
                 "adapter_sha256": sha256_of(distill.RUN_DIR / "adapter" / "adapter_model.safetensors"),
                 "serving": "distill.serve: transformers, bf16, greedy decoding, no output constraints",
                 "generation_limit": distill.MAX_NEW_TOKENS,
+                **ollama,
             },
             "training": {
                 key: training[key]
@@ -464,6 +503,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--tolerate-invalid-output", action="store_true", help="record a session whose output stays invalid instead of stopping")
     ingest.add_argument("--first-sessions", type=int, default=None, help="only each conversation's first n sessions, to probe a slow model")
     ingest.add_argument("--reasoning-effort", default=None, help="sent as reasoning_effort; none keeps a thinking-capable model out of thinking mode")
+    ingest.add_argument("--no-schema", action="store_true", help="send no response schema, so the server does not constrain decoding")
     ingest.set_defaults(func=cmd_ingest)
     sub.add_parser("retrieval").set_defaults(func=cmd_retrieval)
     qa = sub.add_parser("qa")

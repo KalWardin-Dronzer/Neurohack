@@ -151,10 +151,24 @@ def _qa_section(data: dict) -> list[str]:
 
 EXTRACTOR_LABELS = {
     "teacher": "Teacher: `{teacher}` (API)",
-    "student": "Student: {base_short} + LoRA (local)",
-    "base": "Base: {base_short}, no fine-tuning (local)",
+    "student": "Student: {base_short} + LoRA (transformers, bf16)",
+    "student_ollama_free": "Student: {base_short} + LoRA (Ollama, Q8_0)",
+    "student_ollama": "Student: {base_short} + LoRA (Ollama, Q8_0, constrained)",
+    "base": "Base: {base_short}, no fine-tuning (transformers, bf16)",
+    "base_ollama": "Base: {base_short}, no fine-tuning (Ollama, Q8_0, constrained)",
     "regex": "Regex rules (no model)",
     "turn_rag": "Raw-turn RAG (no extraction)",
+}
+EXTRACTOR_ORDER = ("teacher", "student", "student_ollama_free", "student_ollama", "base", "base_ollama", "regex", "turn_rag")
+SHORT_NAMES = {
+    "teacher": "teacher",
+    "student": "student",
+    "student_ollama_free": "student via Ollama",
+    "student_ollama": "student via Ollama, constrained",
+    "base": "untuned base model",
+    "base_ollama": "untuned base model via Ollama, constrained",
+    "regex": "regex rules",
+    "turn_rag": "raw-turn RAG",
 }
 
 
@@ -175,14 +189,15 @@ def _distill_section(data: dict) -> list[str]:
         f"with {', '.join(split['val']['conversations'])} for validation. The table covers the held-out conversations "
         f"{', '.join(test['conversations'])}: {test['sessions']} sessions and {split['test_questions']} questions with "
         "evidence, which no model was tuned on. Every row stores memories in the same v2 engine and retrieves them with "
-        f"the same RRF settings; only the extractor differs. The local models ran through `distill.serve` "
-        f"({models['serving'].split(': ', 1)[1]}) on an {environment['gpu']}.",
+        f"the same RRF settings; only the extractor differs. The local models ran on an {environment['gpu']} through "
+        f"`distill.serve` ({models['serving'].split(': ', 1)[1]})"
+        + (f" or, exported, through {models['serving_ollama']}." if "serving_ollama" in models else "."),
         "",
         "| Extractor | Recall@5 | Recall@10 | Recall@20 | Context tokens at k=10 | Memories per session "
         "| Cited turns vs teacher (precision / recall) | Sessions with invalid output | Seconds per session (p50) |",
         "|---|---|---|---|---|---|---|---|---|",
     ]
-    for name in ("teacher", "student", "base", "regex", "turn_rag"):
+    for name in (n for n in EXTRACTOR_ORDER if n in systems or n in data["extraction"]):
         if name in systems:
             by_k = systems[name]["by_k"]
             cells = [pct(by_k["5"]["recall"]), pct(by_k["10"]["recall"]), pct(by_k["20"]["recall"]), f"{by_k['10']['mean_context_tokens']:,.0f}"]
@@ -202,7 +217,6 @@ def _distill_section(data: dict) -> list[str]:
             ]
         lines.append(f"| {_extractor_label(name, data)} | " + " | ".join(cells) + " |")
 
-    short = {"teacher": "teacher", "student": "student", "base": "untuned base model", "regex": "regex rules", "turn_rag": "raw-turn RAG"}
     probes = [name for name, stats in data["extraction"].items() if not stats["complete"]]
     for name in probes:
         stats = data["extraction"][name]
@@ -210,7 +224,7 @@ def _distill_section(data: dict) -> list[str]:
         per_conversation = stats["sessions"] // len(test["conversations"])
         lines += [
             "",
-            f"The {short[name]} is a probe: it ran on the first {per_conversation} sessions of each held-out conversation "
+            f"The {SHORT_NAMES[name]} is a probe: it ran on the first {per_conversation} sessions of each held-out conversation "
             f"({stats['sessions']} of {stats['sessions_in_conversations']}), so it has no recall figures. In "
             f"{stats['invalid_output_sessions']} of those {stats['sessions']} sessions the reply was still invalid after the "
             f"repair request. Its requests averaged {latency['completion_tokens_per_call']:,.0f} output tokens, against the "
@@ -220,9 +234,9 @@ def _distill_section(data: dict) -> list[str]:
 
     lines += ["", "Paired differences in recall@10 on the same questions (an interval that excludes 0 is a real gap):", ""]
     for key, estimate in data["paired_recall_at_10_differences"].items():
-        lines.append(f"- student minus {short[key.split('_minus_', 1)[1]]}: {signed_pct(estimate)}")
+        a, b = key.split("_minus_", 1)
+        lines.append(f"- {SHORT_NAMES[a]} minus {SHORT_NAMES[b]}: {signed_pct(estimate)}")
 
-    latency = data["extraction"]["student"]["latency"]
     epochs = training["epochs"]
     val_losses = ", ".join(f"{epoch['val_loss']:.3f}" for epoch in epochs[1:])
     base_parameters = training["total_parameters"] - training["trainable_parameters"]
@@ -237,10 +251,21 @@ def _distill_section(data: dict) -> list[str]:
         f"epoch; the epoch {training['best_epoch']} adapter is the one evaluated. Training took "
         f"{training['wall_seconds'] / 60:.0f} minutes with a peak of {training['peak_memory_gb']:.1f} GB of GPU memory.",
         "",
-        f"The student wrote {latency['completion_tokens_per_session']:.0f} tokens per session at "
-        f"{latency['tokens_per_second']:.1f} tokens per second ({latency['seconds_p95']:.1f} s per session at p95). "
-        "Invalid output means the reply still failed schema validation after one repair request; such a session "
-        "stores no memories, and it counts against recall rather than being dropped.",
+    ]
+    speeds = []
+    routes = (("student", "Through transformers"), ("student_ollama_free", "Through Ollama"), ("student_ollama", "Through Ollama with the schema constraint"))
+    for name, route in routes:
+        if name in data["extraction"]:
+            latency = data["extraction"][name]["latency"]
+            speeds.append(
+                f"{route}, the student wrote {latency['completion_tokens_per_session']:.0f} tokens per session at "
+                f"{latency['tokens_per_second']:.1f} tokens per second ({latency['seconds_p95']:.1f} s per session at p95)."
+            )
+    lines += [
+        " ".join(speeds),
+        "",
+        "Invalid output means the reply still failed schema validation after one repair request; such a session stores "
+        "no memories, and it counts against recall rather than being dropped.",
         "",
     ]
     return lines
@@ -295,7 +320,11 @@ def _readme_distill(distill: dict) -> list[str]:
         "|---|---|---|---|",
     ]
     gpu = distill["training"]["environment"]["gpu"].replace("NVIDIA GeForce ", "")
-    for name in ("teacher", "student", "base", "turn_rag"):
+    # One row per model: the student as served without a schema (it keeps the key order it learned), and the base
+    # model's most informative run, the full constrained one when there is one.
+    ollama_student = "student_ollama_free" if "student_ollama_free" in extraction else "student_ollama"
+    base = "base_ollama" if "base_ollama" in distill["systems"] else "base"
+    for name in (n for n in ("teacher", "student", ollama_student, base, "turn_rag") if n == "turn_rag" or n in extraction):
         where = {"teacher": "Gemini API", "turn_rag": "no extraction"}.get(name)
         if where is None:
             where = f"{gpu}, {extraction[name]['latency']['seconds_p50']:.0f} s per session"

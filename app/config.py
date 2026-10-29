@@ -38,6 +38,9 @@ class Settings:
     # Sent as reasoning_effort when set. "none" keeps a thinking-capable local model, such as the distilled
     # Qwen3.5 student under Ollama, in the non-thinking format it was trained on.
     llm_reasoning_effort: str | None = None
+    # Ask the server to constrain output to the JSON schema. Turn it off for the distilled student under Ollama,
+    # whose constrained decoding puts keys in alphabetical order rather than the order the student learned.
+    llm_structured_output: bool = True
     enable_llm_response: bool = False
 
 
@@ -78,5 +81,6 @@ def get_settings() -> Settings:
         llm_cache_path=os.getenv("LLM_CACHE_PATH", defaults.llm_cache_path) or None,
         llm_requests_per_minute=_env_optional_float("LLM_REQUESTS_PER_MINUTE", defaults.llm_requests_per_minute),
         llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip() or defaults.llm_reasoning_effort,
+        llm_structured_output=_env_bool("LLM_STRUCTURED_OUTPUT", defaults.llm_structured_output),
         enable_llm_response=_env_bool("ENABLE_LLM_RESPONSE", defaults.enable_llm_response),
     )

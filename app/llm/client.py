@@ -163,7 +163,11 @@ class LLMClient:
         max_retries: int = 6,
         timeout_s: float = 120.0,
         reasoning_effort: str | None = None,
+        structured_output: bool = True,
     ) -> None:
+        """`structured_output=False` sends no response schema: the model writes JSON from the prompt alone, and
+        the reply is still validated. Use it when a server's constrained decoding changes the output format, as
+        Ollama's does by putting object keys in alphabetical order."""
         from openai import OpenAI
 
         self.model = model
@@ -175,6 +179,7 @@ class LLMClient:
         self._rate_lock = threading.Lock()
         self._max_retries = max_retries
         self._reasoning_effort = reasoning_effort
+        self._structured_output = structured_output
         self._json_schema_supported = True
         self.usage = LLMUsage()
         self._usage_lock = threading.Lock()
@@ -234,7 +239,7 @@ class LLMClient:
         max_tokens: int | None = None,
     ) -> ModelT:
         """Ask for output matching `model_cls`; one repair round on invalid JSON, then ValidationError."""
-        schema = strict_json_schema(model_cls)
+        schema = strict_json_schema(model_cls) if self._structured_output else None
         name = model_cls.__name__
         reply = self.chat(messages, temperature=temperature, max_tokens=max_tokens, json_schema=schema, schema_name=name)
         try:

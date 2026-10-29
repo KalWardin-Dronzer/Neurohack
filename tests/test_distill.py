@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import threading
 from http.server import ThreadingHTTPServer
+from types import SimpleNamespace
 
 import pytest
 import torch
@@ -90,6 +91,21 @@ def test_reasoning_effort_setting_reaches_the_client() -> None:
     settings = Settings(llm_base_url="http://localhost:11434/v1", llm_cache_path=None, llm_reasoning_effort="none")
     assert build_llm_client(settings)._reasoning_effort == "none"
     assert build_llm_client(Settings(llm_base_url="http://localhost:11434/v1", llm_cache_path=None))._reasoning_effort is None
+
+
+def test_structured_output_can_be_turned_off_and_replies_are_still_validated(monkeypatch) -> None:
+    sent: list[dict] = []
+
+    def fake_send(request: dict):
+        sent.append(request)
+        return SimpleNamespace(choices=[SimpleNamespace(message=SimpleNamespace(content=json.dumps(OUTPUT)))], usage=None)
+
+    for structured in (True, False):
+        settings = Settings(llm_base_url="http://localhost:11434/v1", llm_cache_path=None, llm_structured_output=structured)
+        client = build_llm_client(settings)
+        monkeypatch.setattr(client, "_send", fake_send)
+        assert client.chat_json([{"role": "user", "content": "x"}], ExtractionOutput).model_dump() == OUTPUT
+    assert sent[0]["response_format"]["type"] == "json_schema" and "response_format" not in sent[1]
 
 
 class _CharTokenizer:
@@ -277,19 +293,40 @@ def test_distill_report_renders_every_extractor_and_the_readme_table() -> None:
     }
 
     text = "\n".join(report._distill_section(distill))
-    assert "| Student: Small-1B + LoRA (local) | 50.0% [40.0, 60.0]" in text
+    assert "| Student: Small-1B + LoRA (transformers, bf16) | 50.0% [40.0, 60.0]" in text
     assert "student minus teacher: -10.0 pts [-20.0, +0.0]" in text
     assert "10 trainable parameters, 1.0% of the" in text and "0.330 for the base model and 0.200" in text
-    assert "is a probe" not in text
+    assert "is a probe" not in text and "Ollama" not in text
     readme = "\n".join(report._readme_distill(distill))
-    assert "| Base: Small-1B, no fine-tuning (local) | 50.0% [40.0, 60.0] | 99 | RTX 3050 Laptop GPU, 12 s per session |" in readme
+    assert "| Base: Small-1B, no fine-tuning (transformers, bf16) | 50.0% [40.0, 60.0] | 99 | RTX 3050 Laptop GPU, 12 s per session |" in readme
 
     # A model probed on the first sessions only: extraction statistics, no recall, no paired difference.
     del distill["systems"]["base"]
     distill["extraction"]["base"] = dict(stats, complete=False, sessions=2, invalid_output_sessions=2, latency=dict(stats["latency"], seconds_p50=264.0))
     text = "\n".join(report._distill_section(distill))
-    assert "| Base: Small-1B, no fine-tuning (local) | not run (probe) | not run (probe) | not run (probe) | n/a |" in text
+    assert "| Base: Small-1B, no fine-tuning (transformers, bf16) | not run (probe) | not run (probe) | not run (probe) | n/a |" in text
     assert "The untuned base model is a probe: it ran on the first 1 sessions of each held-out conversation (2 of 4)" in text and "In 2 of those 2 sessions the reply was still invalid" in text
     assert "averaged 450 output tokens, against the generation limit of 2,048" in text and "took 4.4 minutes" in text
     readme = "\n".join(report._readme_distill(distill))
-    assert "| Base: Small-1B, no fine-tuning (local) | not run: valid JSON in 0 of 2 sessions tried | n/a |" in readme
+    assert "| Base: Small-1B, no fine-tuning (transformers, bf16) | not run: valid JSON in 0 of 2 sessions tried | n/a |" in readme
+
+    # Both models also served by Ollama: their rows, their paired differences, and the README shows the student as
+    # served without a schema and the full base run.
+    for name in ("student_ollama_free", "student_ollama", "base_ollama"):
+        distill["systems"][name] = system
+        distill["extraction"][name] = dict(stats, latency=dict(stats["latency"], seconds_p50=6.0, tokens_per_second=110.0))
+    distill["models"]["serving_ollama"] = "Ollama 0.40.12 (a Q8_0 GGUF)"
+    distill["paired_recall_at_10_differences"]["student_ollama_free_minus_student"] = {"mean": -0.01, "lo": -0.03, "hi": 0.01, "n": 10}
+    distill["paired_recall_at_10_differences"]["student_ollama_minus_base_ollama"] = {"mean": 0.3, "lo": 0.2, "hi": 0.4, "n": 10}
+    text = "\n".join(report._distill_section(distill))
+    assert "| Student: Small-1B + LoRA (Ollama, Q8_0) | 50.0% [40.0, 60.0]" in text
+    assert "| Student: Small-1B + LoRA (Ollama, Q8_0, constrained) | 50.0% [40.0, 60.0]" in text
+    assert "or, exported, through Ollama 0.40.12 (a Q8_0 GGUF)." in text
+    assert "student via Ollama minus student: -1.0 pts [-3.0, +1.0]" in text
+    assert "student via Ollama, constrained minus untuned base model via Ollama, constrained: +30.0 pts [+20.0, +40.0]" in text
+    assert "Through Ollama, the student wrote 500 tokens per session at 110.0 tokens per second" in text
+    assert "Through Ollama with the schema constraint, the student wrote" in text
+    readme = "\n".join(report._readme_distill(distill))
+    assert "| Student: Small-1B + LoRA (Ollama, Q8_0) | 50.0% [40.0, 60.0] | 99 | RTX 3050 Laptop GPU, 6 s per session |" in readme
+    assert "| Base: Small-1B, no fine-tuning (Ollama, Q8_0, constrained) | 50.0% [40.0, 60.0] | 99 | RTX 3050 Laptop GPU, 6 s per session |" in readme
+    assert "LoRA (Ollama, Q8_0, constrained)" not in readme and "no fine-tuning (transformers, bf16)" not in readme

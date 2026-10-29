@@ -42,6 +42,7 @@ def build_llm_client(settings: Settings, model: str | None = None) -> LLMClient:
         cache_path=settings.llm_cache_path,
         requests_per_minute=settings.llm_requests_per_minute,
         reasoning_effort=settings.llm_reasoning_effort,
+        structured_output=settings.llm_structured_output,
     )
 
 

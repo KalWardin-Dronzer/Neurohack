@@ -122,13 +122,10 @@ def latency_stats(path: Path, sample_ids: set[str]) -> dict | None:
 def compare(
     conversations: list[Conversation],
     retrievers: dict[str, RetrieveFn],
-    reference: str,
-    baselines: tuple[str, ...],
+    pairs: list[tuple[str, str]],
 ) -> tuple[dict, dict]:
-    """Recall results per system, plus paired recall@10 differences of `reference` against each baseline."""
+    """Recall results per system, plus the paired recall@10 difference a minus b for each pair (a, b)."""
     systems = {name: evaluate_system(conversations, retrieve) for name, retrieve in retrievers.items()}
     recalls = {name: per_question_recall(conversations, retrieve) for name, retrieve in retrievers.items()}
-    differences = {
-        f"{reference}_minus_{other}": paired_difference(recalls[reference], recalls[other]).as_dict() for other in baselines
-    }
+    differences = {f"{a}_minus_{b}": paired_difference(recalls[a], recalls[b]).as_dict() for a, b in pairs}
     return systems, differences
