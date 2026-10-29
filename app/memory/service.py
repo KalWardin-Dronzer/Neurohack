@@ -4,6 +4,7 @@ import logging
 import queue
 import threading
 import time
+from datetime import date
 from time import perf_counter
 from typing import Any, Sequence
 
@@ -192,7 +193,8 @@ class MemoryEngine:
 
     def _process_extraction(self, task: ExtractionTask) -> None:
         turns = [TurnInput(turn_id=task.turn_id, speaker="user", text=task.content)]
-        context = ExtractionContext(known_keys=self.store.active_keys(task.session_id))
+        # Today's date lets the extractor resolve "last month" or "tomorrow" in a live turn.
+        context = ExtractionContext(session_date=date.today().strftime("%d %B %Y"), known_keys=self.store.active_keys(task.session_id))
         try:
             candidates = self.extractor.extract_turns(turns, context)
         except LLMError as exc:
@@ -221,6 +223,9 @@ class MemoryEngine:
 
     @staticmethod
     def _format_influence_content(match: MemoryMatch) -> str:
+        # LLM memories are already self-contained sentences; regex values are bare, such as "Kannada".
+        if len(match.value.split()) >= 4:
+            return match.value
         if match.key == "preferred_language":
             return f"User prefers {match.value}"
         if match.key == "call_time_preference":
