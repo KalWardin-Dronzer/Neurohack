@@ -117,11 +117,16 @@ llama.cpp checkout's converter, and registers it as `neurohack-extractor`:
 .venv-train\Scripts\python -m distill.export --llama-cpp C:\path\to\llama.cpp
 ```
 
-Set `LLM_BASE_URL=http://localhost:11434/v1`, `LLM_MODEL=neurohack-extractor` and `LLM_REASONING_EFFORT=none`.
-The last setting matters. Ollama turns on Qwen3.5's thinking mode by default, which changes the prompt the
-student was trained on. Ollama also constrains decoding to the JSON schema.
+Set these four:
 
-**With transformers.** This route needs no conversion. It is the server behind the benchmark numbers:
+- `LLM_BASE_URL=http://localhost:11434/v1`
+- `LLM_MODEL=neurohack-extractor`
+- `LLM_REASONING_EFFORT=none`, because by default Ollama turns on Qwen3.5's thinking mode, which changes the
+  prompt the student was trained on;
+- `LLM_STRUCTURED_OUTPUT=false`, because Ollama's schema-constrained decoding writes keys in alphabetical
+  order, not the order the student learned, and that costs recall (RESULTS.md). Replies are still validated.
+
+**With transformers.** This route needs no conversion, but on Windows it is several times slower:
 
 ```bash
 .venv-train\Scripts\python -m distill.serve --name neurohack-extractor --adapter bench/runs/distill/qwen3.5-0.8b/adapter
@@ -133,7 +138,8 @@ To reproduce the comparison, serve one model at a time:
 
 1. Start `make distill-serve` and run `make bench-distill-student`.
 2. Start `make distill-serve-base` and run `make bench-distill-base`.
-3. Run `make bench-distill`, then `make bench-report`.
+3. For the Ollama rows, run `make distill-export LLAMA_CPP=path/to/llama.cpp`, then `make bench-distill-ollama`.
+4. Run `make bench-distill`, then `make bench-report`.
 
 The protocol is in [docs/DESIGN.md](docs/DESIGN.md#distilling-the-extractor).
 

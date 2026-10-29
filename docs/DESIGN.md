@@ -210,7 +210,9 @@ invalid stores no memories and counts against recall.
 The GGUF step is necessary because Ollama on Windows imports safetensors only through its MLX runtime, which
 is not available there.
 
-One trap matters. Ollama 0.40 renders prompts with the chat template stored in the GGUF and ignores a
+Two traps change what the student sees or writes, and both are invisible unless measured.
+
+*Thinking mode.* Ollama 0.40 renders prompts with the chat template stored in the GGUF and ignores a
 Modelfile TEMPLATE. Qwen3.5's template supports thinking, so Ollama turns thinking on by default. The prompt
 then ends in an open think block, two tokens away from the training format, and the student starts writing a
 reasoning section instead of JSON.
@@ -222,10 +224,19 @@ confirms this on held-out sessions:
 - it validates the memories Ollama returns;
 - it uses the default request as a positive control.
 
-Through Ollama, decoding is also constrained to the JSON schema. A diagnostic run on two held-out sessions
-generated 100 to 119 tokens per second, against about 14 with `distill.serve` on the same GPU. llama.cpp runs
-the model with compiled kernels, while transformers fell back to its reference implementation. The benchmark
-tables still come from `distill.serve`; the Ollama route has not been run on the whole held-out set.
+*Key order.* Asked to constrain decoding to a JSON schema, Ollama writes the object's keys in alphabetical
+order, whatever order the schema gives. Asked for keys `zebra`, `apple` and `mango`, it returned `apple`,
+`mango`, `zebra`; without the constraint, the model kept the requested order. The student learned `subject`,
+`memory_type`, `key`, `value` and so on, so the constraint forces a format it never saw. Under it, the student
+sometimes repeats one memory until the generation limit.
+
+RESULTS.md therefore runs the student through Ollama both ways, on every held-out session. Without the
+schema, its recall matches the bf16 student's, so 8-bit quantisation cost nothing measurable. With the schema,
+recall drops and some replies stay invalid. The recommended setting is `LLM_STRUCTURED_OUTPUT=false`. The
+extractor still validates every reply and asks once for a repair.
+
+Through Ollama the student also runs several times faster than through `distill.serve` on the same GPU,
+because llama.cpp runs it with compiled kernels while transformers fell back to its reference implementation.
 
 **Evaluation.** Four extractors each fill the same v2 store for the held-out conversations:
 
@@ -274,9 +285,10 @@ The tables are in RESULTS.md.
 
 ## Limits and next steps
 
-- **Benchmark the Ollama route.** Rerun the held-out comparison through Ollama, which is quantised and
-  schema-constrained. Constrained decoding also makes a full run of the untuned base model affordable. Then
-  measure the student's QA accuracy with the same answer model and judge as the other systems.
+- **Constrained decoding without the cost.** Train the student on keys in alphabetical order, or serve it
+  through a runtime whose grammar keeps the schema's order. Either way, constrained decoding would then guard
+  the format without changing it.
+- **QA accuracy for the student,** with the same answer model and judge as the other systems.
 - **Agent access.** Expose `remember`, `recall` and `forget` as an MCP server so any agent can use the store.
 - **More data.** Run LongMemEval for single-user, multi-session histories with knowledge updates.
 - **Dedupe and summaries.** Events are deduplicated only on identical text, so near-duplicates across
