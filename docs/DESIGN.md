@@ -1,8 +1,9 @@
 # Design notes
 
 This document records why Neurohack v2 is built the way it is, what was wrong with the hackathon version,
-and how the benchmark was run. Measured numbers live in [RESULTS.md](../RESULTS.md), which is generated from
-`bench/results/*.json`; this file quotes none of them by hand.
+and how the benchmark was run. Benchmark tables live in [RESULTS.md](../RESULTS.md), which is generated from
+`bench/results/*.json`. The few figures quoted here either appear there or come from the diagnostic runs
+described where they are quoted.
 
 ## Where v2 started
 
@@ -27,20 +28,21 @@ so neither ranker needs normalising and neither can silently dominate. k = 60 is
 RRF paper (Cormack et al., SIGIR 2009); it was not tuned on LoCoMo. Recency is available as an optional
 third ranking and is measured as an ablation rather than switched on by default.
 
-**BM25 direction.** v2 uses `-bm25()` as relevance, so higher means better. `tests/test_retrieval.py` and the
-gate script `check_bm25_direction` both run the same five-document fixture through v2, and through v1's
-normalization as a positive control that must stay inverted.
+**BM25 direction.** v2 uses `-bm25()` as relevance, so higher means better. `tests/test_retrieval.py` checks
+that a five-document fixture ranks the stronger match first. `tests/test_bench.py` runs the same fixture
+through the vendored v1 code, as a positive control that must stay inverted.
 
 **Embeddings.** `BAAI/bge-small-en-v1.5` (384 dimensions, 33M parameters) runs on CPU in milliseconds per
 query and is strong for its size on retrieval. BGE is asymmetric: queries get the instruction prefix
 "Represent this sentence for searching relevant passages: " and stored memories do not. The hashed backend
 still exists for fast offline tests, but it must be selected explicitly.
 
-**Exact search, not a vector index.** Each LoCoMo conversation yields a few hundred memories. A cached
-float32 matrix times one query vector is exact and takes well under a millisecond at that size, so an
-approximate index (FAISS, HNSW) would add a dependency and lose recall for no measurable gain. The matrix is
-rebuilt only when that session's memories change. At hundreds of thousands of memories per user this would
-move to `sqlite-vec` or FAISS.
+**Exact search, not a vector index.** Each LoCoMo conversation yields at most a few hundred memories
+(1,769 across all ten). At that size, multiplying a cached float32 matrix by one query vector is exact and
+takes microseconds. A full v2 ranking, BM25 query included, takes about a millisecond (RESULTS.md). An
+approximate index (FAISS, HNSW) would therefore add a dependency and lose recall for no measurable gain.
+The matrix is rebuilt only when that session's memories change. At hundreds of thousands of memories per
+user this would move to `sqlite-vec` or FAISS.
 
 **Storage.** Vectors are float32 blobs tagged with the embedding model and dimension. A vector from another
 model is never compared: dimension mismatches raise an error, and on startup the engine re-embeds anything
@@ -133,9 +135,9 @@ regraded alone. Token F1, LoCoMo's original metric, is reported alongside becaus
 **Models.** The Gemini free tier allows 20 requests a day for `gemini-3.5-flash`, far short of the 272
 extraction calls. Extraction and judging therefore use `gemini-3.5-flash-lite`, and answers use
 `gemini-3.1-flash-lite`, which has its own daily quota. One model serves each role across all systems, so
-comparisons are fair. On the development session, `gemini-3.5-flash` extracted 8 memories where
-`gemini-3.5-flash-lite` extracted 6 (it missed one event and one photo citation), so a stronger extractor
-should raise v2's numbers.
+comparisons are fair. On the development session, given the same prompt, `gemini-3.5-flash` extracted 8
+memories where `gemini-3.5-flash-lite` extracted 6 (it missed one event and one photo citation). A stronger
+extractor should therefore raise v2's numbers.
 
 **Uncertainty.** Every rate carries a 95% percentile-bootstrap interval over questions, and systems are
 compared with paired bootstrap differences on the same questions. Questions from one conversation are

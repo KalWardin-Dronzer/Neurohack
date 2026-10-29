@@ -159,6 +159,28 @@ def test_report_renders_from_results_without_typed_numbers() -> None:
     assert "| 50.0% [40.0, 60.0] | 50.0% [40.0, 60.0] | 1,234 |" in updated
 
 
+def test_v1_baseline_keeps_its_inverted_bm25() -> None:
+    """Positive control for the BM25 fix: the vendored v1 code must still score the stronger match lower."""
+    from bench.locomo.legacy_v1.retriever import HybridRetriever as V1Retriever
+    from bench.locomo.legacy_v1.store import MemoryStore as V1Store
+    from bench.locomo.legacy_v1.types import MemoryCandidate as V1Candidate, MemoryType as V1Type
+
+    store = V1Store(":memory:")
+    docs = {
+        "strong": "preferred language kannada language kannada",
+        "weak": "favorite color blue and the language of the week was discussed at length today",
+        "filler_one": "random topic one",
+        "filler_two": "random topic two",
+        "filler_three": "another random topic",
+    }
+    for key, value in docs.items():
+        store.upsert_memory("s", 1, V1Candidate(V1Type.FACT, key, value, 0.9), "[]")
+    raw = {row["key"]: float(row["lexical_score"]) for row in store.lexical_search("s", "language kannada", 10)}
+    assert raw["strong"] < raw["weak"] < 0  # FTS5: more negative is better
+    assert V1Retriever._normalize_lexical(raw["strong"]) < V1Retriever._normalize_lexical(raw["weak"])
+    store.close()
+
+
 def test_vendored_v1_matches_the_hackathon_tag() -> None:
     if subprocess.run(["git", "rev-parse", "--verify", "-q", "v1.0-hackathon"], cwd=ROOT, capture_output=True).returncode != 0:
         pytest.skip("tag v1.0-hackathon is not available in this clone")

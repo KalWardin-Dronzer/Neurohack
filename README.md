@@ -6,8 +6,9 @@ later turn by fusing dense and BM25 rankings, and newer facts replace stale ones
 to replay the full history.
 
 It began as a hackathon entry (Neurohack, IIT Guwahati, **26th nationally**), preserved at tag
-[`v1.0-hackathon`](https://github.com/KalWardin-Dronzer/Neurohack/tree/v1.0-hackathon). v2 rebuilds it and measures it on the LoCoMo long-conversation
-benchmark against full-context prompting, raw-turn RAG and the original submission.
+[`v1.0-hackathon`](https://github.com/KalWardin-Dronzer/Neurohack/tree/v1.0-hackathon). v2 rebuilds it and
+measures it on the LoCoMo long-conversation benchmark against full-context prompting, raw-turn RAG and the
+original submission.
 
 <!-- RESULTS:START -->
 ## Results on LoCoMo
@@ -40,9 +41,9 @@ Why each decision was made, and what the benchmark does and does not show:
 
 ```text
 turn ──► store turn ──► dense (BGE, cached matrix) ─┐
-                    └─► BM25 (SQLite FTS5) ─────────┴─► RRF ─► one value per slot ─► reply with memories
-     └─► background worker ─► LLM extraction (schema-checked, cited, dated) ─► upsert: events accumulate,
-                                                                                facts supersede
+                    └─► BM25 (SQLite FTS5) ─────────┴─► RRF ─► top k ─► reply with memories
+     └─► background worker ─► LLM extraction (schema-checked, cited, dated) ─► upsert: memories accumulate;
+                                                         a replacing fact deprecates its closest match
 ```
 
 Full diagram: [ARCHITECTURE_DIAGRAM.txt](ARCHITECTURE_DIAGRAM.txt). The LLM client speaks the
