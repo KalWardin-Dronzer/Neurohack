@@ -175,7 +175,7 @@ def cmd_ingest(args) -> int:
     )
     try:
         for conversation in conversations:
-            v2.prepare(conversation)
+            v2.prepare(conversation, first_sessions=args.first_sessions)
             invalid = v2.progress(conversation.sample_id).get("invalid_output", [])
             print(f"{conversation.sample_id}: {v2.stats(conversation).memories} active memories; {len(invalid)} sessions with invalid output")
     except QuotaExhausted as exc:
@@ -336,16 +336,24 @@ def cmd_distill_eval(args) -> int:
         "base": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / args.base),
         "regex": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / "regex", extractor_factory=RegexExtractor),
     }
+    # A model may be probed on each conversation's first sessions instead of all of them (the untuned base model
+    # writes until the token limit, so a full run is impractical). A probed model gets extraction statistics
+    # over the sessions it ran, but no recall: questions about the sessions it skipped would count as misses.
+    probed = {name for name in ("student", "base") if not all(stores[name].is_ingested(c) for c in test)}
+    if "student" in probed:
+        sys.exit("the student must be ingested on every held-out session; see `make bench-distill-student`")
     try:
         for question in data.evaluable_questions(test):
             queries.get(question.text)
         for conversation in test:
             turn_rag.prepare(conversation)
-            for store in stores.values():
-                store.prepare(conversation)  # student and base must already be ingested; regex is built here
+            for name, store in stores.items():
+                ran = len(store.progress(conversation.sample_id)["sessions"]) if name in probed else None
+                store.prepare(conversation, first_sessions=ran)  # LLM extractors must already be ingested; regex is built here
         retrievers = {"turn_rag": turn_rag.retrieve}
-        retrievers.update({name: (lambda c, q, k, store=store: store.retrieve(c, q, k, mode="rrf")) for name, store in stores.items()})
-        systems, differences = compare(test, retrievers, "student", ("teacher", "base", "regex", "turn_rag"))
+        retrievers.update({name: (lambda c, q, k, store=store: store.retrieve(c, q, k, mode="rrf")) for name, store in stores.items() if name not in probed})
+        baselines = tuple(name for name in ("teacher", "base", "regex", "turn_rag") if name in retrievers)
+        systems, differences = compare(test, retrievers, "student", baselines)
         teacher_outputs = read_outputs(V2_DIR / "extractions.jsonl", test_ids)
         outputs = {
             "teacher": teacher_outputs,
@@ -355,8 +363,9 @@ def cmd_distill_eval(args) -> int:
         }
         extraction = {}
         for name, store in stores.items():
+            attempted = {(c.sample_id, number) for c in test for number in store.progress(c.sample_id)["sessions"]}
             stored = sum(len(store.engines[c.sample_id].list_memories(c.sample_id, status="active", limit=100_000)) for c in test)
-            stats = extraction_stats(test, outputs[name], teacher_outputs, stored)
+            stats = extraction_stats(test, outputs[name], teacher_outputs, stored, attempted=attempted)
             stats["invalid_output_sessions"] = sum(len(store.progress(c.sample_id).get("invalid_output", [])) for c in test)
             stats["latency"] = latency_stats(store.runs_dir / "timings.jsonl", test_ids)
             extraction[name] = stats
@@ -385,6 +394,7 @@ def cmd_distill_eval(args) -> int:
                 "base_revision": training["config"]["base_revision"],
                 "adapter_sha256": sha256_of(distill.RUN_DIR / "adapter" / "adapter_model.safetensors"),
                 "serving": "distill.serve: transformers, bf16, greedy decoding, no output constraints",
+                "generation_limit": distill.MAX_NEW_TOKENS,
             },
             "training": {
                 key: training[key]
@@ -450,6 +460,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--max-tokens", type=int, default=None)
     ingest.add_argument("--timeout", type=float, default=120.0, help="seconds per request")
     ingest.add_argument("--tolerate-invalid-output", action="store_true", help="record a session whose output stays invalid instead of stopping")
+    ingest.add_argument("--first-sessions", type=int, default=None, help="only each conversation's first n sessions, to probe a slow model")
     ingest.set_defaults(func=cmd_ingest)
     sub.add_parser("retrieval").set_defaults(func=cmd_retrieval)
     qa = sub.add_parser("qa")

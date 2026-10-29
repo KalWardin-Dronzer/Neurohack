@@ -245,8 +245,11 @@ class MemoryV2:
     def is_ingested(self, conversation: Conversation) -> bool:
         return set(self.progress(conversation.sample_id)["sessions"]) >= {session.number for session in conversation.sessions}
 
-    def prepare(self, conversation: Conversation) -> None:
-        """Open the conversation's engine and ingest any sessions not done yet (requires an extractor)."""
+    def prepare(self, conversation: Conversation, first_sessions: int | None = None) -> None:
+        """Open the conversation's engine and ingest any sessions not done yet (requires an extractor).
+
+        `first_sessions` limits ingestion to the conversation's first n sessions, for probing a slow model.
+        """
         sample_id = conversation.sample_id
         if sample_id not in self.engines:
             self.runs_dir.mkdir(parents=True, exist_ok=True)
@@ -260,7 +263,7 @@ class MemoryV2:
         progress_path = self._progress_path(sample_id)
         progress = self.progress(sample_id)
         done, invalid = set(progress["sessions"]), set(progress.get("invalid_output", []))
-        pending = [session for session in conversation.sessions if session.number not in done]
+        pending = [session for session in conversation.sessions[:first_sessions] if session.number not in done]
         if pending and self.extractor_factory is None:
             raise RuntimeError(f"{sample_id} is not fully ingested; run `python -m bench.locomo ingest` first")
         engine = self.engines[sample_id]

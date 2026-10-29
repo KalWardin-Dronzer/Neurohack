@@ -190,6 +190,11 @@ def test_extraction_stats_compare_cited_turns_with_the_teacher() -> None:
     assert stats["invented_evidence_share"] == 0.5
     assert stats["cited_turns_vs_teacher"]["precision"] == 1.0
     assert stats["cited_turns_vs_teacher"]["recall"] == pytest.approx(1 / 3)
+    assert stats["complete"]
+
+    probed = extraction_stats([conversation], student, teacher, stored_memories=1, attempted={("c", 1)})
+    assert (probed["complete"], probed["sessions"], probed["sessions_in_conversations"]) == (False, 1, 2)
+    assert probed["cited_turns_vs_teacher"]["recall"] == 0.5
 
 
 class _FailsOnFirstSession:
@@ -223,11 +228,13 @@ def test_distill_report_renders_every_extractor_and_the_readme_table() -> None:
     estimate = {"mean": 0.5, "lo": 0.4, "hi": 0.6, "n": 10}
     system = {"by_k": {k: {"recall": estimate, "hit": estimate, "mean_items": 3.0, "mean_context_tokens": 99.0} for k in ("5", "10", "20")}}
     stats = {
+        "complete": True,
         "sessions": 4,
+        "sessions_in_conversations": 4,
         "memories_per_session": 6.0,
         "invalid_output_sessions": 1,
         "cited_turns_vs_teacher": {"precision": 0.8, "recall": 0.7, "f1": 0.75},
-        "latency": {"seconds_p50": 12.0, "seconds_p95": 20.0, "completion_tokens_per_session": 500.0, "tokens_per_second": 40.0},
+        "latency": {"seconds_p50": 12.0, "seconds_p95": 20.0, "completion_tokens_per_session": 500.0, "completion_tokens_per_call": 450.0, "tokens_per_second": 40.0},
     }
     distill = {
         "split": {
@@ -236,7 +243,7 @@ def test_distill_report_renders_every_extractor_and_the_readme_table() -> None:
             "test": {"conversations": ["d", "e"], "sessions": 4},
             "test_questions": 10,
         },
-        "models": {"teacher": "t-model", "base_model": "Org/Small-1B", "base_revision": "abcdef123", "serving": "distill.serve: greedy"},
+        "models": {"teacher": "t-model", "base_model": "Org/Small-1B", "base_revision": "abcdef123", "serving": "distill.serve: greedy", "generation_limit": 2048},
         "training": {
             "environment": {"gpu": "NVIDIA GeForce RTX 3050 Laptop GPU"},
             "config": {"epochs": 3, "grad_accum": 8, "learning_rate": 2e-4, "lora_rank": 16, "lora_alpha": 32, "lora_dropout": 0.05, "lora_targets": ["q_proj"]},
@@ -258,5 +265,16 @@ def test_distill_report_renders_every_extractor_and_the_readme_table() -> None:
     assert "| Student: Small-1B + LoRA (local) | 50.0% [40.0, 60.0]" in text
     assert "student minus teacher: -10.0 pts [-20.0, +0.0]" in text
     assert "10 trainable parameters, 1.0% of the" in text and "0.330 for the base model and 0.200" in text
+    assert "is a probe" not in text
     readme = "\n".join(report._readme_distill(distill))
     assert "| Base: Small-1B, no fine-tuning (local) | 50.0% [40.0, 60.0] | 99 | RTX 3050 Laptop GPU, 12 s per session |" in readme
+
+    # A model probed on the first sessions only: extraction statistics, no recall, no paired difference.
+    del distill["systems"]["base"]
+    distill["extraction"]["base"] = dict(stats, complete=False, sessions=2, invalid_output_sessions=2, latency=dict(stats["latency"], seconds_p50=264.0))
+    text = "\n".join(report._distill_section(distill))
+    assert "| Base: Small-1B, no fine-tuning (local) | not run (probe) | not run (probe) | not run (probe) | n/a |" in text
+    assert "ran on the first 1 sessions of each held-out conversation (2 of 4)" in text
+    assert "averaged 450 output tokens, against the generation limit of 2,048" in text and "took 4.4 minutes" in text
+    readme = "\n".join(report._readme_distill(distill))
+    assert "| Base: Small-1B, no fine-tuning (local) | not run: valid JSON in 0 of 2 sessions tried | n/a |" in readme

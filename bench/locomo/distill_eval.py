@@ -53,9 +53,19 @@ def per_question_recall(conversations: list[Conversation], retrieve: RetrieveFn,
     return [recall_at(retrieve(by_id[q.conversation_id], q, k), q, k) for q in questions]
 
 
-def extraction_stats(conversations: list[Conversation], outputs: Outputs, teacher: Outputs, stored_memories: int) -> dict:
-    """What an extractor wrote per session, and how far the turns it cites agree with the teacher's."""
-    sessions = [(c.sample_id, s) for c in conversations for s in c.sessions]
+def extraction_stats(
+    conversations: list[Conversation],
+    outputs: Outputs,
+    teacher: Outputs,
+    stored_memories: int,
+    attempted: set[tuple[str, int]] | None = None,
+) -> dict:
+    """What an extractor wrote per session, and how far the turns it cites agree with the teacher's.
+
+    `attempted` restricts the counts to the sessions a probed extractor was run on; by default, all of them.
+    """
+    every = [(c.sample_id, s) for c in conversations for s in c.sessions]
+    sessions = [(sid, s) for sid, s in every if attempted is None or (sid, s.number) in attempted]
     written = cited_valid = cited_invalid = events = 0
     overlap = cited_own = cited_teacher = 0
     for sample_id, session in sessions:
@@ -72,7 +82,9 @@ def extraction_stats(conversations: list[Conversation], outputs: Outputs, teache
     precision = overlap / cited_own if cited_own else 0.0
     recall = overlap / cited_teacher if cited_teacher else 0.0
     return {
+        "complete": len(sessions) == len(every),
         "sessions": len(sessions),
+        "sessions_in_conversations": len(every),
         "sessions_with_output": sum(key in outputs for key in ((sid, s.number) for sid, s in sessions)),
         "memories_per_session": written / len(sessions),
         "event_share": events / written if written else 0.0,
@@ -101,6 +113,7 @@ def latency_stats(path: Path, sample_ids: set[str]) -> dict | None:
         "seconds_p50": percentile(seconds, 50),
         "seconds_p95": percentile(seconds, 95),
         "completion_tokens_per_session": completion / len(live),
+        "completion_tokens_per_call": completion / sum(row["calls"] for row in live),
         "tokens_per_second": completion / sum(seconds),
         "repair_calls": sum(row["calls"] - 1 for row in live),
     }

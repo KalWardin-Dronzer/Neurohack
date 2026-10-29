@@ -183,8 +183,11 @@ def _distill_section(data: dict) -> list[str]:
         "|---|---|---|---|---|---|---|---|---|",
     ]
     for name in ("teacher", "student", "base", "regex", "turn_rag"):
-        by_k = systems[name]["by_k"]
-        cells = [pct(by_k["5"]["recall"]), pct(by_k["10"]["recall"]), pct(by_k["20"]["recall"]), f"{by_k['10']['mean_context_tokens']:,.0f}"]
+        if name in systems:
+            by_k = systems[name]["by_k"]
+            cells = [pct(by_k["5"]["recall"]), pct(by_k["10"]["recall"]), pct(by_k["20"]["recall"]), f"{by_k['10']['mean_context_tokens']:,.0f}"]
+        else:
+            cells = ["not run (probe)"] * 3 + ["n/a"]
         stats = data["extraction"].get(name)
         if stats is None:
             cells += ["n/a"] * 4
@@ -198,6 +201,21 @@ def _distill_section(data: dict) -> list[str]:
                 f"{latency['seconds_p50']:.1f}" if latency else "n/a",
             ]
         lines.append(f"| {_extractor_label(name, data)} | " + " | ".join(cells) + " |")
+
+    probes = [name for name, stats in data["extraction"].items() if not stats["complete"]]
+    for name in probes:
+        stats = data["extraction"][name]
+        latency = stats["latency"]
+        per_conversation = stats["sessions"] // len(test["conversations"])
+        lines += [
+            "",
+            f"The {_extractor_label(name, data).split(': ', 1)[-1].split(' (')[0]} row is a probe: it ran on the first "
+            f"{per_conversation} sessions of each held-out conversation ({stats['sessions']} of {stats['sessions_in_conversations']}), "
+            f"so it has no recall figures. {stats['invalid_output_sessions']} of its {stats['sessions']} replies were still "
+            f"invalid after the repair request. Its requests averaged {latency['completion_tokens_per_call']:,.0f} output "
+            f"tokens, against the generation limit of {models['generation_limit']:,}. Each session therefore took "
+            f"{latency['seconds_p50'] / 60:.1f} minutes at the median, which made a full run impractical.",
+        ]
 
     lines += ["", "Paired differences in recall@10 on the same questions (an interval that excludes 0 is a real gap):", ""]
     short = {"teacher": "teacher", "base": "untuned base model", "regex": "regex rules", "turn_rag": "raw-turn RAG"}
@@ -281,8 +299,14 @@ def _readme_distill(distill: dict) -> list[str]:
         where = {"teacher": "Gemini API", "turn_rag": "no extraction"}.get(name)
         if where is None:
             where = f"{gpu}, {extraction[name]['latency']['seconds_p50']:.0f} s per session"
-        by_k = distill["systems"][name]["by_k"]["10"]
-        lines.append(f"| {_extractor_label(name, distill)} | {pct(by_k['recall'])} | {by_k['mean_context_tokens']:,.0f} | {where} |")
+        if name in distill["systems"]:
+            by_k = distill["systems"][name]["by_k"]["10"]
+            recall, tokens = pct(by_k["recall"]), f"{by_k['mean_context_tokens']:,.0f}"
+        else:
+            stats = extraction[name]
+            valid = stats["sessions"] - stats["invalid_output_sessions"]
+            recall, tokens = f"not run: valid JSON in {valid} of {stats['sessions']} sessions tried", "n/a"
+        lines.append(f"| {_extractor_label(name, distill)} | {recall} | {tokens} | {where} |")
     lines += [
         "",
         f"The student is `{distill['models']['base_model']}` fine-tuned with LoRA on the teacher's extractions from "

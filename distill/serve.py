@@ -20,10 +20,8 @@ from pathlib import Path
 
 import torch
 
-from .config import BASE_MODEL, BASE_REVISION
+from .config import BASE_MODEL, BASE_REVISION, MAX_NEW_TOKENS
 from .prompt import END_OF_TURN, render_prompt
-
-MAX_NEW_TOKENS = 2048
 
 
 class Generator:
