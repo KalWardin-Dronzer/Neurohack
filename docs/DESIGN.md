@@ -169,13 +169,13 @@ it has not read about. With seed 2026:
 
 **Student.** `Qwen/Qwen3.5-0.8B` at revision `2fc0636`, licensed Apache 2.0. Its 752M parameters fine-tune in
 bf16 on a 4 GB laptop GPU. Most of its layers are Gated DeltaNet (linear attention), with full attention
-every fourth layer, so long prompts stay cheap. The Qwen3.5 fine-tuning notes advise against 4-bit QLoRA for
-this family, because its quantisation error is unusually high. The base weights therefore stay in bf16 and
-only LoRA adapters train.
+every fourth layer, so long prompts stay cheap. Unsloth's Qwen3.5 fine-tuning guide advises against 4-bit
+QLoRA for this family, because its quantisation error is unusually high. The base weights therefore stay in
+bf16 and only LoRA adapters train.
 
 **Training.** LoRA (rank 16, alpha 32, dropout 0.05) goes on every attention, linear-attention and MLP
-projection. The per-head decay and gate projections are left out, because they output only 16 values each, so a rank-16
-update to them would not be low-rank. The recipe was fixed before training:
+projection. The per-head decay and gate projections are left out, because they output only 16 values each,
+so a rank-16 update to them would not be low-rank. The recipe was fixed before training:
 
 - 3 epochs at learning rate 2e-4, with warmup and cosine decay;
 - 8 sessions per optimizer step;
@@ -183,9 +183,9 @@ update to them would not be low-rank. The recipe was fixed before training:
 
 The loss covers only the reply tokens. The vocabulary has 248k tokens, so the fp32 logits of a 1,000-token
 reply would take about 1 GB. They are computed in checkpointed chunks of 256 positions instead. A unit test
-checks the chunked loss and its gradient against plain cross-entropy, and on real examples it agreed with the
-transformers loss to within 1e-6. Validation loss is measured before training and after each epoch, and the
-adapter from the best epoch is kept. The reported run started from committed code, so `training.json` names
+checks the chunked loss and its gradient against plain cross-entropy. In a diagnostic run on two validation
+examples, it also matched the loss transformers computes itself to within 1e-6 relative. Validation loss is
+measured before training and after each epoch, and the adapter from the best epoch is kept. The reported run started from committed code, so `training.json` names
 the exact commit.
 
 **Prompt format.** Training and serving render prompts with one function, in `distill/prompt.py`. A check
@@ -202,7 +202,7 @@ invalid stores no memories and counts against recall.
 **GGUF and Ollama.** Not done yet. Ollama on Windows can import safetensors only through its MLX runtime,
 which is not available there, so it needs a GGUF file. Producing one requires llama.cpp's converter, which was
 not run in this environment. Through Ollama the student would also get grammar-constrained JSON decoding,
-which should make invalid replies impossible.
+which should rule out schema errors short of the generation limit.
 
 **Evaluation.** Four extractors each fill the same v2 store for the held-out conversations:
 
@@ -223,15 +223,17 @@ reference that extracts nothing. The metrics are:
 - seconds per session on the laptop GPU.
 
 The untuned base model is only probed, on the first five sessions of each held-out conversation, and gets no
-recall figures. Without fine-tuning or constrained decoding it does not write the schema. Of its 15 replies,
-one was valid, and that one was an empty list. The rest failed the same way:
+recall figures. Without fine-tuning or constrained decoding it does not write the schema. In the 15 probed
+sessions it produced valid JSON once, and that reply was an empty list. Each of the other 28 replies (two per
+session, counting the repair request) ran to the 2,048-token generation limit, which cut the JSON off. A count
+over the cached replies shows what went wrong before that point:
 
-- it invents fields, such as a `description`, and leaves out `event_date` and `replaces_previous`;
-- it repeats memories until it reaches the 2,048-token generation limit;
-- the repair request gets the same reply back.
+- most replies left out required fields: `event_date` in 24 and `replaces_previous` in 20;
+- some invented fields the schema does not have, such as a `description` in 8;
+- most repeated the same memory, up to 20 times in one reply.
 
-Each failed session therefore costs two full-length generations, more than four minutes on this GPU. A full
-run of all 91 sessions would have taken about seven hours to show the same failure.
+Each failed session therefore cost two full-length generations, more than four minutes on this GPU. A full run
+of all 91 sessions would have taken about seven hours to show the same failure.
 
 The tables are in RESULTS.md.
 
@@ -243,9 +245,9 @@ The tables are in RESULTS.md.
 - The student learns the teacher's habits, including what the teacher misses.
 - The student's QA accuracy was not measured, because the answer model's free-tier quota went to the main QA
   run.
-- The Gated DeltaNet layers ran on transformers' reference PyTorch kernels. flash-linear-attention needs
-  Triton, which has no official Windows build, so training and decoding would be several times faster on
-  Linux.
+- The Gated DeltaNet layers ran on transformers' reference PyTorch kernels, which transformers itself warns
+  are much slower. The optimised kernels (flash-linear-attention) need Triton, which has no official Windows
+  build, so training and decoding should be faster on Linux.
 
 ## Limits and next steps
 

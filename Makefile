@@ -54,9 +54,10 @@ bench-distill-student:
 	python -m bench.locomo ingest --base-url $(STUDENT_URL) --model neurohack-extractor --rpm 0 --timeout 600 --max-tokens 2048 \
 		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --runs-dir bench/runs/distill/ingest/neurohack-extractor
 
+# The untuned base model writes until the token limit, so it is probed on each conversation's first 5 sessions.
 bench-distill-base:
 	python -m bench.locomo ingest --base-url $(BASE_URL) --model neurohack-extractor-base --rpm 0 --timeout 600 --max-tokens 2048 \
-		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --runs-dir bench/runs/distill/ingest/neurohack-extractor-base
+		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --first-sessions 5 --runs-dir bench/runs/distill/ingest/neurohack-extractor-base
 
 bench-distill:
 	python -m bench.locomo distill-eval

@@ -211,9 +211,9 @@ def _distill_section(data: dict) -> list[str]:
         lines += [
             "",
             f"The {short[name]} is a probe: it ran on the first {per_conversation} sessions of each held-out conversation "
-            f"({stats['sessions']} of {stats['sessions_in_conversations']}), so it has no recall figures. "
-            f"{stats['invalid_output_sessions']} of its {stats['sessions']} replies were still invalid after the repair "
-            f"request. Its requests averaged {latency['completion_tokens_per_call']:,.0f} output tokens, against the "
+            f"({stats['sessions']} of {stats['sessions_in_conversations']}), so it has no recall figures. In "
+            f"{stats['invalid_output_sessions']} of those {stats['sessions']} sessions the reply was still invalid after the "
+            f"repair request. Its requests averaged {latency['completion_tokens_per_call']:,.0f} output tokens, against the "
             f"generation limit of {models['generation_limit']:,}. Each session therefore took "
             f"{latency['seconds_p50'] / 60:.1f} minutes at the median, which made a full run impractical.",
         ]

@@ -62,7 +62,7 @@ Memories whose cosine similarity to the question falls below the floor are never
 | Regex rules (no model) | 2.8% [1.5, 4.4] | 3.7% [2.1, 5.5] | 4.1% [2.4, 6.0] | 144 | 1.1 | 24% / 4% | 0 of 91 | n/a |
 | Raw-turn RAG (no extraction) | 49.2% [44.8, 53.8] | 61.2% [56.8, 65.5] | 70.2% [66.1, 74.1] | 397 | n/a | n/a | n/a | n/a |
 
-The untuned base model is a probe: it ran on the first 5 sessions of each held-out conversation (15 of 91), so it has no recall figures. 14 of its 15 replies were still invalid after the repair request. Its requests averaged 1,978 output tokens, against the generation limit of 2,048. Each session therefore took 4.4 minutes at the median, which made a full run impractical.
+The untuned base model is a probe: it ran on the first 5 sessions of each held-out conversation (15 of 91), so it has no recall figures. In 14 of those 15 sessions the reply was still invalid after the repair request. Its requests averaged 1,978 output tokens, against the generation limit of 2,048. Each session therefore took 4.4 minutes at the median, which made a full run impractical.
 
 Paired differences in recall@10 on the same questions (an interval that excludes 0 is a real gap):
 
