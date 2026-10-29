@@ -11,7 +11,7 @@ closely turned up these problems:
 
 | v1 behaviour | Effect |
 |---|---|
-| Memory extraction was eight regex rules ("my preferred language is …", "i live in …"); the LLM extractor was a stub that returned `[]`. | Anything not phrased that way was never remembered. On LoCoMo's natural dialogue it stores only a handful of memories per conversation, mostly fragments such as "keep ya posted" (the total is in RESULTS.md). |
+| Memory extraction was eight regex rules ("my preferred language is …", "i live in …"); the LLM extractor was a stub that returned `[]`. | Anything not phrased that way was never remembered. On LoCoMo's 5,882 turns it stores 300 memories, mostly fragments such as "keep ya posted"; v2 stores 1,769. |
 | `sentence-transformers` was not in `requirements.txt`, so a default install fell back silently to MD5-hashed bag-of-words vectors. | "Semantic" retrieval was really word overlap. |
 | FTS5's `bm25()` is more negative for better matches, but v1 mapped it through `1 / (1 + abs(x))`. | The strongest lexical matches received the lowest lexical scores. |
 | The final score added cosine, BM25, recency and confidence with hand-set weights (0.45/0.25/0.2/0.1), and the relevance floor was 0. | The inverted BM25 term was hidden inside the sum, and up to six memories were always injected whether or not they were relevant. |

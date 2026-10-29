@@ -10,7 +10,15 @@ It began as a hackathon entry (Neurohack, IIT Guwahati, **26th nationally**), pr
 benchmark against full-context prompting, raw-turn RAG and the original submission.
 
 <!-- RESULTS:START -->
-*LoCoMo results appear here once `python -m bench.locomo report` has run.*
+## Results on LoCoMo
+
+| System | Evidence recall@10 | Context tokens at k = 10 |
+|---|---|---|
+| Raw-turn RAG (dense top-k over turns) | 58.5% [56.2, 60.8] | 401 |
+| Neurohack v1 as submitted (regex extraction, weighted scores) | 1.5% [1.0, 2.1] | 165 |
+| Neurohack v2 (LLM extraction, RRF retrieval) | 65.7% [63.5, 67.9] | 228 |
+
+Recall covers all 1,535 questions with annotated evidence; brackets are 95% bootstrap intervals. LLM-judged question answering on a stratified subset is still running within the free-tier quota. Per-category tables, ablations and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
 <!-- RESULTS:END -->
 
 ## What changed from the hackathon version
