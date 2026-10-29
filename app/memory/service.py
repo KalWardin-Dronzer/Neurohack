@@ -1,19 +1,25 @@
 from __future__ import annotations
 
+import logging
 import queue
 import threading
 import time
 from time import perf_counter
-from typing import Any
+from typing import Any, Sequence
 
 from app.config import Settings
+from app.llm.client import LLMClient, LLMError
 
 from .embedder import EmbeddingModel
-from .extractor import MemoryExtractor
+from .extractor import Extractor, RegexExtractor, build_extractor
 from .responder import ResponseGenerator
 from .retriever import HybridRetriever
 from .store import MemoryStore
-from .types import ExtractionTask, MemoryCandidate, MemoryMatch
+from .types import ExtractionContext, ExtractionTask, MemoryCandidate, MemoryMatch, TurnInput
+
+logger = logging.getLogger(__name__)
+
+_LOCAL_HOSTS = ("localhost", "127.0.0.1", "0.0.0.0")
 
 
 def build_embedder(settings: Settings) -> EmbeddingModel:
@@ -25,14 +31,36 @@ def build_embedder(settings: Settings) -> EmbeddingModel:
     )
 
 
+def build_llm_client(settings: Settings, model: str | None = None) -> LLMClient:
+    if not settings.llm_api_key and not any(host in settings.llm_base_url for host in _LOCAL_HOSTS):
+        raise RuntimeError(f"LLM_API_KEY is empty but {settings.llm_base_url} needs one")
+    return LLMClient(
+        base_url=settings.llm_base_url,
+        api_key=settings.llm_api_key,
+        model=model or settings.llm_model,
+        cache_path=settings.llm_cache_path,
+        requests_per_minute=settings.llm_requests_per_minute,
+    )
+
+
 class MemoryEngine:
-    def __init__(self, settings: Settings, embedder: EmbeddingModel | None = None) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        embedder: EmbeddingModel | None = None,
+        llm_client: LLMClient | None = None,
+        extractor: Extractor | None = None,
+    ) -> None:
         self.settings = settings
         self.store = MemoryStore(settings.database_path)
         self.embedder = embedder or build_embedder(settings)
-        self.extractor = MemoryExtractor()
+        needs_llm = settings.extractor == "llm" or settings.enable_llm_response
+        self._owns_llm = llm_client is None and needs_llm and extractor is None
+        self.llm = llm_client or (build_llm_client(settings) if self._owns_llm else None)
+        self.extractor = extractor or build_extractor(settings.extractor, self.llm)
+        self.fallback_extractor = RegexExtractor()
         self.retriever = HybridRetriever(settings=settings, store=self.store, embedder=self.embedder)
-        self.responder = ResponseGenerator(model=settings.llm_model, enable_openai=False)
+        self.responder = ResponseGenerator(self.llm if settings.enable_llm_response else None)
         self.reembed_stale_memories()
 
         self._tasks: queue.Queue[ExtractionTask] = queue.Queue()
@@ -77,6 +105,21 @@ class MemoryEngine:
             "active_memories": self._serialize_matches(retrieved_memories) if expose_memory else [],
         }
         return payload
+
+    def ingest_session(self, session_id: str, turns: Sequence[TurnInput], session_date: str | None = None) -> list[str]:
+        """Store a batch of turns and extract memories from them in one call (e.g. one LoCoMo session)."""
+        if not turns:
+            return []
+        self.store.add_turns_if_missing(session_id, [(turn.turn_id, turn.speaker, turn.text) for turn in turns])
+        context = ExtractionContext(session_date=session_date, known_keys=self.store.active_keys(session_id))
+        candidates = self.extractor.extract_turns(turns, context)
+        return self.store_candidates(session_id, candidates, source_turn=max(turn.turn_id for turn in turns))
+
+    def describe(self) -> dict[str, str]:
+        extractor = type(self.extractor).__name__
+        if self.llm is not None and self.settings.extractor == "llm":
+            extractor = f"{extractor}({self.llm.model})"
+        return {"extractor": extractor, "embeddings": self.embedder.model_id, "retrieval": self.settings.retrieval_mode}
 
     def store_candidates(self, session_id: str, candidates: list[MemoryCandidate], source_turn: int) -> list[str]:
         if not candidates:
@@ -129,6 +172,8 @@ class MemoryEngine:
         self._stop_event.set()
         self._worker.join(timeout=1.5)
         self.store.close()
+        if self._owns_llm and self.llm is not None:
+            self.llm.close()
 
     def _worker_loop(self) -> None:
         while not self._stop_event.is_set():
@@ -139,11 +184,21 @@ class MemoryEngine:
 
             try:
                 self._process_extraction(task)
+            except Exception:
+                # v1 let one failure kill this thread, after which no later turn was ever extracted.
+                logger.exception("memory extraction failed for %s turn %d", task.session_id, task.turn_id)
             finally:
                 self._tasks.task_done()
 
     def _process_extraction(self, task: ExtractionTask) -> None:
-        candidates = self.extractor.extract(task.content)
+        turns = [TurnInput(turn_id=task.turn_id, speaker="user", text=task.content)]
+        context = ExtractionContext(known_keys=self.store.active_keys(task.session_id))
+        try:
+            candidates = self.extractor.extract_turns(turns, context)
+        except LLMError as exc:
+            # A live conversation should keep its memory even when the LLM is unavailable or out of quota.
+            logger.warning("LLM extraction unavailable (%s); using regex extraction for this turn", exc)
+            candidates = self.fallback_extractor.extract_turns(turns, context)
         self.store_candidates(task.session_id, candidates, source_turn=task.turn_id)
 
     @staticmethod

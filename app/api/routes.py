@@ -17,8 +17,8 @@ router = APIRouter()
 
 
 @router.get("/health", response_model=HealthResponse)
-def health() -> HealthResponse:
-    return HealthResponse(status="ok")
+def health(request: Request) -> HealthResponse:
+    return HealthResponse(status="ok", **request.app.state.memory_engine.describe())
 
 
 @router.post("/sessions/{session_id}/turns", response_model=TurnResponse)

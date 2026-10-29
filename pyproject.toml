@@ -14,7 +14,8 @@ dependencies = [
   "pydantic>=2.7.0,<3.0.0",
   "numpy>=1.26.0,<3.0.0",
   "python-dotenv>=1.0.0,<2.0.0",
-  "sentence-transformers>=3.0.0,<6.0.0"
+  "sentence-transformers>=3.0.0,<6.0.0",
+  "openai>=1.40.0,<3.0.0"
 ]
 
 [project.optional-dependencies]

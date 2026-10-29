@@ -60,6 +60,9 @@ class FlushResponse(BaseModel):
 
 class HealthResponse(BaseModel):
     status: str
+    extractor: Optional[str] = None
+    embeddings: Optional[str] = None
+    retrieval: Optional[str] = None
 
 
 class EvaluationReport(BaseModel):

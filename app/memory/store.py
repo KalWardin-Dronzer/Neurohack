@@ -147,6 +147,16 @@ class MemoryStore:
             )
             self._conn.commit()
 
+    def add_turns_if_missing(self, session_id: str, turns: list[tuple[int, str, str]]) -> None:
+        """Batch insert of (turn_id, role, content); turns already stored are left alone, so ingestion can resume."""
+        with self._lock:
+            now = self._now()
+            self._conn.executemany(
+                "INSERT OR IGNORE INTO turns(session_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
+                [(session_id, turn_id, role, content, now) for turn_id, role, content in turns],
+            )
+            self._conn.commit()
+
     def get_recent_turns(self, session_id: str, limit: int) -> list[dict[str, Any]]:
         with self._lock:
             rows = self._conn.execute(

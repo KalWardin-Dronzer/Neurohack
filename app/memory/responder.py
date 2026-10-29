@@ -1,27 +1,27 @@
 from __future__ import annotations
 
-import os
+import logging
+
+from app.llm.client import LLMClient, LLMError
 
 from .types import MemoryMatch
 
+logger = logging.getLogger(__name__)
+
+SYSTEM_PROMPT = (
+    "You are a helpful assistant with long-term memory of this user. Use the memories below implicitly; "
+    "do not list them unless asked. When a newer memory contradicts an older one, trust the newer one."
+)
+
+
+def format_memory(memory: MemoryMatch) -> str:
+    when = f" (date: {memory.event_date})" if memory.event_date else ""
+    return f"- {memory.key.replace('_', ' ')}: {memory.value}{when}"
+
 
 class ResponseGenerator:
-    def __init__(self, model: str, enable_openai: bool = False) -> None:
-        self.model = model
-        self.enable_openai = enable_openai
-        self._client = self._create_openai_client() if enable_openai else None
-
-    @staticmethod
-    def _create_openai_client():
-        api_key = os.getenv("OPENAI_API_KEY")
-        if not api_key:
-            return None
-        try:
-            from openai import OpenAI  # type: ignore
-
-            return OpenAI(api_key=api_key)
-        except Exception:
-            return None
+    def __init__(self, client: LLMClient | None = None) -> None:
+        self._client = client
 
     def generate(
         self,
@@ -30,44 +30,30 @@ class ResponseGenerator:
         memories: list[MemoryMatch],
     ) -> str:
         if self._client is not None:
-            response = self._generate_with_openai(user_message=user_message, recent_turns=recent_turns, memories=memories)
+            response = self._generate_with_llm(user_message=user_message, recent_turns=recent_turns, memories=memories)
             if response:
                 return response
 
         return self._generate_fallback(user_message=user_message, memories=memories)
 
-    def _generate_with_openai(
+    def _generate_with_llm(
         self,
         user_message: str,
         recent_turns: list[dict[str, str]],
         memories: list[MemoryMatch],
     ) -> str | None:
-        memory_context = "\n".join(
-            f"- {memory.key}: {memory.value} (confidence={memory.confidence:.2f})" for memory in memories
-        )
-        if not memory_context:
-            memory_context = "- none"
-
-        system_prompt = (
-            "You are a helpful assistant. Use provided memory context implicitly; "
-            "do not list memories unless directly asked."
-        )
-
-        messages = [{"role": "system", "content": system_prompt}]
+        memory_context = "\n".join(format_memory(memory) for memory in memories) or "- none"
+        messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nRelevant long-term memory:\n{memory_context}"}]
         for turn in recent_turns[-8:]:
             messages.append({"role": turn["role"], "content": turn["content"]})
-        messages.append({"role": "system", "content": f"Relevant long-term memory:\n{memory_context}"})
-        messages.append({"role": "user", "content": user_message})
+        # The store already holds the current turn, so it usually closes recent_turns; v1 sent it twice.
+        if not recent_turns or recent_turns[-1]["content"] != user_message:
+            messages.append({"role": "user", "content": user_message})
 
         try:
-            completion = self._client.chat.completions.create(
-                model=self.model,
-                messages=messages,
-                temperature=0.2,
-                max_tokens=220,
-            )
-            return completion.choices[0].message.content
-        except Exception:
+            return self._client.chat(messages, temperature=0.2, max_tokens=300).text
+        except LLMError as exc:
+            logger.warning("LLM response failed (%s); using the rule-based reply", exc)
             return None
 
     def _generate_fallback(self, user_message: str, memories: list[MemoryMatch]) -> str:
