@@ -259,4 +259,4 @@ def test_distill_report_renders_every_extractor_and_the_readme_table() -> None:
     assert "student minus teacher: -10.0 pts [-20.0, +0.0]" in text
     assert "10 trainable parameters, 1.0% of the" in text and "0.330 for the base model and 0.200" in text
     readme = "\n".join(report._readme_distill(distill))
-    assert "| Base: Small-1B, no fine-tuning (local) | 50.0% [40.0, 60.0] | RTX 3050 Laptop GPU, 12 s per session |" in readme
+    assert "| Base: Small-1B, no fine-tuning (local) | 50.0% [40.0, 60.0] | 99 | RTX 3050 Laptop GPU, 12 s per session |" in readme

@@ -178,13 +178,13 @@ def _distill_section(data: dict) -> list[str]:
         f"the same RRF settings; only the extractor differs. The local models ran through `distill.serve` "
         f"({models['serving'].split(': ', 1)[1]}) on an {environment['gpu']}.",
         "",
-        "| Extractor | Recall@5 | Recall@10 | Recall@20 | Memories per session | Cited turns vs teacher (precision / recall) "
-        "| Sessions with invalid output | Seconds per session (p50) |",
-        "|---|---|---|---|---|---|---|---|",
+        "| Extractor | Recall@5 | Recall@10 | Recall@20 | Context tokens at k=10 | Memories per session "
+        "| Cited turns vs teacher (precision / recall) | Sessions with invalid output | Seconds per session (p50) |",
+        "|---|---|---|---|---|---|---|---|---|",
     ]
     for name in ("teacher", "student", "base", "regex", "turn_rag"):
         by_k = systems[name]["by_k"]
-        cells = [pct(by_k["5"]["recall"]), pct(by_k["10"]["recall"]), pct(by_k["20"]["recall"])]
+        cells = [pct(by_k["5"]["recall"]), pct(by_k["10"]["recall"]), pct(by_k["20"]["recall"]), f"{by_k['10']['mean_context_tokens']:,.0f}"]
         stats = data["extraction"].get(name)
         if stats is None:
             cells += ["n/a"] * 4
@@ -273,15 +273,16 @@ def _readme_distill(distill: dict) -> list[str]:
         "",
         "### A distilled extractor that runs on a laptop",
         "",
-        "| Extractor | Evidence recall@10 on held-out conversations | Runs on |",
-        "|---|---|---|",
+        "| Extractor | Evidence recall@10 on held-out conversations | Context tokens at k = 10 | Runs on |",
+        "|---|---|---|---|",
     ]
     gpu = distill["training"]["environment"]["gpu"].replace("NVIDIA GeForce ", "")
     for name in ("teacher", "student", "base", "turn_rag"):
         where = {"teacher": "Gemini API", "turn_rag": "no extraction"}.get(name)
         if where is None:
             where = f"{gpu}, {extraction[name]['latency']['seconds_p50']:.0f} s per session"
-        lines.append(f"| {_extractor_label(name, distill)} | {pct(distill['systems'][name]['by_k']['10']['recall'])} | {where} |")
+        by_k = distill["systems"][name]["by_k"]["10"]
+        lines.append(f"| {_extractor_label(name, distill)} | {pct(by_k['recall'])} | {by_k['mean_context_tokens']:,.0f} | {where} |")
     lines += [
         "",
         f"The student is `{distill['models']['base_model']}` fine-tuned with LoRA on the teacher's extractions from "
