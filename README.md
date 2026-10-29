@@ -1,237 +1,102 @@
-# Long-Form Memory System (1,000+ Turns)
+# Neurohack: long-term memory for LLM conversations
 
-This project implements a submission-ready real-time memory architecture for the hackathon prompt:
+A memory service for chat assistants. An LLM extracts what is worth remembering from each conversation as
+typed, dated memories that cite the turns they came from. The service retrieves the relevant memories at any
+later turn by fusing dense and BM25 rankings, and newer facts replace stale ones, so the assistant never has
+to replay the full history.
 
-- No full conversation replay.
-- No unlimited prompt growth.
-- Fully automated memory extraction.
-- Durable memory persistence across restarts.
-- Relevant retrieval and low-latency injection at turn `N`.
+It began as a hackathon entry (Neurohack, IIT Guwahati, **26th nationally**), preserved at tag
+[`v1.0-hackathon`](https://github.com/KalWardin-Dronzer/Neurohack/tree/v1.0-hackathon). v2 rebuilds it and measures it on the LoCoMo long-conversation
+benchmark against full-context prompting, raw-turn RAG and the original submission.
 
-## What This Solves
+<!-- RESULTS -->
 
-At any turn, the system can:
+## What changed from the hackathon version
 
-1. Extract durable user facts/preferences/instructions.
-2. Persist them in a structured store.
-3. Retrieve only relevant memories with hybrid ranking.
-4. Inject memory context into response generation.
-5. Handle conflicts (new preference supersedes old preference).
+| | v1.0-hackathon | v2 |
+|---|---|---|
+| Extraction | 8 regex rules; the LLM hook was a stub | LLM with JSON-schema output, Pydantic validation, evidence turn ids and ISO event dates; regex kept as an offline fallback |
+| Embeddings | Hashed bag-of-words by default (sentence-transformers was not installed) | `BAAI/bge-small-en-v1.5`, with a query instruction prefix |
+| Lexical ranking | BM25 normalization inverted: the best matches scored lowest | `-bm25()` relevance with Porter stemming |
+| Fusion | Hand-weighted sum of incompatible scores | Reciprocal Rank Fusion, with dense-only, BM25-only and recency ablations |
+| Updates | One value per key, ignoring who it was about | Facts accumulate; one the model marks as replacing an earlier fact deprecates the most similar value, with lineage |
+| Robustness | One extraction error killed the worker thread | Worker survives errors; a live turn falls back to regex when the LLM is unavailable |
+| Evaluation | 3 scripted probes (now called a smoke test) | LoCoMo: evidence recall on every question and LLM-judged QA, with bootstrap intervals |
 
-## Architecture
+Why each decision was made, and what the benchmark does and does not show:
+[docs/DESIGN.md](docs/DESIGN.md).
 
-```text
-User Turn
-  |
-  +--> Fast Path (sync, low latency)
-  |      1) Save turn
-  |      2) Retrieve memories (hybrid semantic + lexical + recency + confidence)
-  |      3) Build response with short-term + long-term context
-  |      4) Return response
-  |
-  +--> Async Path (background)
-         5) Extract memory candidates from the new turn
-         6) Upsert/supersede memory records
-         7) Update embedding + FTS indexes
-```
-
-### Memory Layers
-
-- Short-term memory: last `K` raw turns (`SHORT_TERM_WINDOW`) for conversational continuity.
-- Long-term memory: structured records in SQLite + semantic vectors + lexical FTS.
-
-### Storage Strategy
-
-- SQLite tables:
-  - `turns`
-  - `memories`
-  - `memory_embeddings`
-- SQLite FTS5 virtual table:
-  - `memory_fts` for lexical retrieval.
-- Semantic retrieval:
-  - embeddings per memory (optional sentence-transformers, hashed fallback).
-
-## Retrieval Strategy
-
-Hybrid score combines:
-
-- Semantic similarity (cosine).
-- Lexical relevance (FTS/BM25-like score normalization).
-- Recency decay (`recency_half_life_turns`).
-- Memory confidence.
-
-Only top `k` memories are injected. One memory per key is kept to avoid contradictory prompt injection.
-
-## Conflict Handling
-
-When a new memory arrives for the same key:
-
-- Same normalized value: update confidence.
-- Different value: older active memory is marked `deprecated`, new memory becomes `active`.
-- `supersedes_memory_id` records lineage.
-
-## Project Layout
+## How it works
 
 ```text
-app/
-  api/routes.py              # FastAPI routes
-  config.py                  # Runtime settings
-  evaluation.py              # Benchmark scenarios + metrics
-  main.py                    # FastAPI app entry
-  schemas.py                 # API contracts
-  memory/
-    embedder.py              # Embedding backend (SLM optional, hashed fallback)
-    extractor.py             # Automated extraction rules (+ optional LLM hook)
-    responder.py             # Response generation and memory injection
-    retriever.py             # Hybrid retrieval ranker
-    service.py               # Orchestration + async worker
-    store.py                 # SQLite persistence layer
-    types.py                 # Memory dataclasses/enums
-scripts/
-  run_demo.py                # 1,000-turn demo run
-  run_evaluation.py          # Benchmark runner
-tests/
-  test_memory_system.py      # Recall/conflict/injection tests
+turn ──► store turn ──► dense (BGE, cached matrix) ─┐
+                    └─► BM25 (SQLite FTS5) ─────────┴─► RRF ─► one value per slot ─► reply with memories
+     └─► background worker ─► LLM extraction (schema-checked, cited, dated) ─► upsert: events accumulate,
+                                                                                facts supersede
 ```
 
-## Quick Start
+Full diagram: [ARCHITECTURE_DIAGRAM.txt](ARCHITECTURE_DIAGRAM.txt). The LLM client speaks the
+OpenAI-compatible API, so Gemini, Ollama, vLLM and OpenAI work by changing `LLM_BASE_URL`. It caches every
+reply in SQLite, so benchmark reruns are free and an interrupted run resumes where it stopped.
 
-1. Create and activate a virtual environment.
-2. Install dependencies:
-
-```bash
-python -m pip install -r requirements.txt
-```
-
-3. Optional env setup:
-
-```bash
-copy .env.example .env
-```
-
-4. Start API server:
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
-```
-
-## End-to-End Reproduction (Submission)
-
-Use these exact steps to reproduce a full demo run from scratch.
-
-1. Create virtual environment:
+## Quick start
 
 ```bash
 python -m venv .venv
+.venv\Scripts\activate            # macOS/Linux: source .venv/bin/activate
+pip install -r requirements.txt
+copy .env.example .env            # macOS/Linux: cp; set MEMORY_EXTRACTOR=llm and LLM_API_KEY for LLM extraction
+python -m uvicorn app.main:app --port 8000
 ```
 
-2. Activate it:
+Then open `http://localhost:8000/docs`. The main endpoints:
+
+- `POST /sessions/{id}/turns`: send a user turn, get a reply (and the memories used, with `expose_memory`).
+- `GET /sessions/{id}/memories`: list what the system remembers.
+- `GET /health`: shows which extractor, embedding model and retrieval mode are active.
+
+Real request and response pairs are in [API_SAMPLE_RESPONSES.md](API_SAMPLE_RESPONSES.md).
+
+## Reproduce the benchmark
 
 ```bash
-# macOS/Linux
-source .venv/bin/activate
-
-# Windows PowerShell
-.venv\Scripts\Activate.ps1
+python -m bench.locomo download    # LoCoMo from a pinned commit, sha256-checked (CC BY-NC 4.0, not redistributed)
+python -m bench.locomo ingest      # v2 memories: one LLM call per session, resumable
+python -m bench.locomo retrieval   # evidence recall for every system; no LLM calls
+python -m bench.locomo qa          # answers and LLM judgments on the stratified subset; cached and resumable
+python -m bench.locomo report      # regenerates RESULTS.md from bench/results/*.json
 ```
 
-3. Install dependencies:
+The default models fit the Gemini free tier, and the protocol (exclusions, subset, judge, intervals) is in
+[docs/DESIGN.md](docs/DESIGN.md#benchmark-protocol). To check the LLM judge yourself, run
+`python -m bench.locomo judge-sample`, label the 50 exported answers, then run `judge-agreement`.
 
-```bash
-python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
-```
-
-4. Run the packaged demo script:
-
-```bash
-bash run_demo.sh
-```
-
-This executes:
-1. `python -m scripts.run_demo` (memory pipeline over 1,000 turns)
-2. `python -m scripts.run_evaluation` (metrics report)
-
-5. Optional API demo:
-
-```bash
-python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
-```
-
-Then open:
-1. `http://localhost:8000/docs`
-2. `POST /sessions/{session_id}/turns`
-3. `GET /sessions/{session_id}/memories`
-
-## API Usage
-
-### Process a turn
-
-```bash
-curl -X POST "http://localhost:8000/sessions/demo/turns" \
-  -H "Content-Type: application/json" \
-  -d '{"user_message":"My preferred language is Kannada.","expose_memory":true}'
-```
-
-### List memories
-
-```bash
-curl "http://localhost:8000/sessions/demo/memories"
-```
-
-### Flush async extraction queue
-
-```bash
-curl -X POST "http://localhost:8000/sessions/demo/flush"
-```
-
-### Run built-in benchmark
-
-```bash
-curl -X POST "http://localhost:8000/evaluate"
-```
-
-## Demo + Evaluation Scripts
-
-Run 1,000-turn demo:
-
-```bash
-python -m scripts.run_demo
-```
-
-Run benchmark report:
-
-```bash
-python -m scripts.run_evaluation
-```
-
-Build upload zip:
-
-```bash
-python -m scripts.build_submission_zip
-```
-
-Build presentation artifacts (PPTX/PDF):
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts/build_presentation.ps1 -ExportPdf
-```
-
-## Test
+## Tests
 
 ```bash
 pytest -q
 ```
 
-## Submission Notes
+The tests cover the BM25 direction, RRF arithmetic, vector-model mismatches, supersession, LLM output
+validation, the repair round and fallback, quota handling, evidence-id repair, the bootstrap statistics, and a
+check that the vendored v1 baseline still matches the tag.
 
-- Real-time path avoids extraction bottlenecks by offloading extraction asynchronously.
-- Hybrid retrieval supports both semantic and lexical recall.
-- Structured memory supports auditability and conflict resolution.
-- Evaluation includes long-range (1,000-turn) and conflict scenarios.
+## Layout
 
-## Optional Upgrades
+```text
+app/
+  llm/client.py        OpenAI-compatible client: JSON-schema output, repair, cache, pacing, retries
+  memory/extractor.py  LLM and regex extractors
+  memory/retriever.py  dense + BM25 with Reciprocal Rank Fusion
+  memory/store.py      SQLite store, FTS5 index, float32 vectors, supersession
+  memory/service.py    engine: live turns, batch ingestion, background worker
+bench/locomo/          dataset loader, systems, retrieval and QA evaluation, report
+  legacy_v1/           the v1.0-hackathon code, frozen as a baseline
+docs/DESIGN.md         decisions, protocol and limitations
+docs/hackathon/        the original submission packet and slides
+```
 
-- Replace hashed embeddings with sentence-transformers in production.
-- Add OpenAI-based extractor for richer memory parsing.
-- Swap SQLite vector payload scanning with FAISS/pgvector for larger-scale throughput.
+## Dataset credit
+
+LoCoMo: Maharana et al., "Evaluating Very Long-Term Conversational Memory of LLM Agents", ACL 2024.
+Licensed CC BY-NC 4.0.
