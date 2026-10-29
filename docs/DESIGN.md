@@ -92,8 +92,8 @@ old one. The model reuses broad keys, and on conversation `conv-26` that rule de
 memories it extracted (55%). For example, "Caroline loves the book Becoming Nicole" was replaced by
 "Caroline's favorite color is blue" under the key `favorite_book`, which was in turn replaced by her favourite
 song. With 62 memories left, v2's evidence recall@10 on that conversation was 0.39, against 0.64 for raw-turn
-RAG. The `replaces_previous` flag described above is the fix, and all reported results come from the
-re-extracted run.
+RAG. The `replaces_previous` flag described above is the fix. Re-extracted with it, the same conversation
+kept 137 active memories and its recall@10 rose to 0.66. All reported results come from the re-extracted run.
 
 ## Benchmark protocol
 
