@@ -55,7 +55,8 @@ def run_qa(
         for position, question in enumerate(subset, start=1):
             conversation = by_id[question.conversation_id]
             retrieved = retrieve(conversation, question, k)
-            context = retrieved.render(k) or "(no context retrieved)"
+            # Retrieval systems return at most k items; full context returns every session and must keep them all.
+            context = retrieved.render() or "(no context retrieved)"
             reply = answer_client.chat(answer_messages(conversation, context, question), temperature=0.0)
             records.append(
                 {

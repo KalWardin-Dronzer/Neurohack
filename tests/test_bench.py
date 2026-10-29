@@ -46,6 +46,19 @@ def test_recall_counts_cited_evidence_within_k() -> None:
     assert recall_at(retrieved, question, 3) == 1.0
 
 
+def test_full_context_keeps_every_session() -> None:
+    from bench.locomo.data import Conversation, Session, Turn
+    from bench.locomo.systems import FullContext
+
+    sessions = tuple(
+        Session(number=n, date_text="", date=parse_session_date("1:56 pm on 8 May, 2023"), turns=(Turn(f"D{n}:1", "A", f"turn {n}", n, n),))
+        for n in range(1, 31)
+    )
+    conversation = Conversation("c", "A", "B", sessions, ())
+    rendered = FullContext().retrieve(conversation, Question("c:q0", "c", "?", "a", 4, ()), k=10).render()
+    assert rendered.count("Session ") == 30 and "turn 30" in rendered
+
+
 def test_bootstrap_ci_brackets_point_estimate() -> None:
     values = [1.0] * 70 + [0.0] * 30
     estimate = bootstrap_ci(values, n_boot=2000, seed=1)
