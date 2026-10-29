@@ -9,6 +9,8 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+import numpy as np
+
 from .types import MemoryCandidate, MemoryStatus, MemoryType
 
 SCHEMA_VERSION = 2
@@ -220,7 +222,7 @@ class MemoryStore:
             if candidate.is_event:
                 memory_id = self._upsert_event(session_id, source_turn, candidate, now)
             else:
-                memory_id = self._upsert_slot(session_id, source_turn, candidate, now)
+                memory_id = self._upsert_fact(session_id, source_turn, candidate, vector, model_id, now)
 
             self._put_embedding_locked(memory_id, session_id, vector, model_id, dim)
             self._upsert_fts(memory_id, session_id, self._fts_content(candidate))
@@ -257,13 +259,21 @@ class MemoryStore:
         )
         return str(duplicate["memory_id"])
 
-    def _upsert_slot(self, session_id: str, source_turn: int, candidate: MemoryCandidate, now: str) -> str:
+    def _upsert_fact(
+        self, session_id: str, source_turn: int, candidate: MemoryCandidate, vector: bytes, model_id: str, now: str
+    ) -> str:
+        """A key can hold several facts (two hobbies, three favourite books). Only a candidate marked
+        replaces_previous deprecates anything, and then only the existing value most similar to it.
+
+        The first v2 run treated every key as a single-valued slot. Models reuse broad keys such as
+        "hobby", so most memories were wrongly deprecated (see docs/DESIGN.md)."""
         active_rows = self._conn.execute(
             """
-            SELECT *
-            FROM memories
-            WHERE session_id = ? AND subject = ? AND key = ? AND status = ?
-            ORDER BY source_turn DESC
+            SELECT m.*, e.vector, e.model_id AS vector_model, e.dim
+            FROM memories m
+            LEFT JOIN memory_embeddings e ON e.memory_id = m.memory_id
+            WHERE m.session_id = ? AND m.subject = ? AND m.key = ? AND m.status = ?
+            ORDER BY m.source_turn DESC
             """,
             (session_id, candidate.subject, candidate.key, MemoryStatus.ACTIVE.value),
         ).fetchall()
@@ -273,9 +283,6 @@ class MemoryStore:
         )
         if same_value_row is not None:
             memory_id = same_value_row["memory_id"]
-            for row in active_rows:
-                if row["memory_id"] != memory_id:
-                    self._deprecate(row["memory_id"], now)
             evidence = sorted(set(json.loads(same_value_row["evidence"])) | set(candidate.evidence))
             self._conn.execute(
                 "UPDATE memories SET confidence = ?, evidence = ?, updated_at = ? WHERE memory_id = ?",
@@ -283,10 +290,25 @@ class MemoryStore:
             )
             return str(memory_id)
 
-        supersedes_memory_id = active_rows[0]["memory_id"] if active_rows else None
-        for row in active_rows:
-            self._deprecate(row["memory_id"], now)
+        supersedes_memory_id = None
+        if candidate.replaces_previous and active_rows:
+            target = self._most_similar(active_rows, vector, model_id)
+            self._deprecate(target["memory_id"], now)
+            supersedes_memory_id = target["memory_id"]
         return self._insert(session_id, source_turn, candidate, supersedes_memory_id=supersedes_memory_id, now=now)
+
+    @staticmethod
+    def _most_similar(rows: list[sqlite3.Row], vector: bytes, model_id: str) -> sqlite3.Row:
+        """The row whose stored vector is closest to `vector`; the most recent row when none is comparable."""
+        query = np.frombuffer(vector, dtype=np.float32)
+        best, best_score = rows[0], float("-inf")
+        for row in rows:
+            if row["vector"] is None or row["vector_model"] != model_id or int(row["dim"]) != query.shape[0]:
+                continue
+            score = float(np.dot(np.frombuffer(row["vector"], dtype=np.float32), query))
+            if score > best_score:
+                best, best_score = row, score
+        return best
 
     def _deprecate(self, memory_id: str, now: str) -> None:
         self._conn.execute(
@@ -480,7 +502,10 @@ class MemoryStore:
         return records
 
     def conflict_rate(self, session_id: str) -> float:
-        """Share of slot keys with more than one active value. Events are excluded: they accumulate."""
+        """Share of fact keys holding more than one active value; events are excluded.
+
+        With regex extraction every key is single-valued, so this counts contradictions. LLM-extracted keys
+        may legitimately hold several values, so there it measures how often keys are shared."""
         with self._lock:
             row = self._conn.execute(
                 """

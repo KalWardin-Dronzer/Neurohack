@@ -48,10 +48,33 @@ def _memory(**overrides) -> dict:
         "value": "Caroline attended an LGBTQ support group.",
         "event_date": "2023-05-07",
         "evidence": ["D1:3"],
+        "replaces_previous": False,
         "confidence": 0.95,
     }
     item.update(overrides)
     return item
+
+
+def test_replaces_previous_is_kept_for_facts_and_dropped_for_events() -> None:
+    llm = ScriptedLLM(
+        {
+            "memories": [
+                _memory(memory_type="fact", key="job", value="Melanie now works as a nurse.", event_date="", replaces_previous=True),
+                _memory(replaces_previous=True),
+            ]
+        }
+    )
+    fact, event = LLMExtractor(llm).extract_turns(SESSION_TURNS, ExtractionContext())  # type: ignore[arg-type]
+    assert fact.replaces_previous is True
+    assert event.replaces_previous is False
+
+
+def test_extractor_records_the_last_exchange_for_distillation() -> None:
+    extractor = LLMExtractor(ScriptedLLM({"memories": [_memory()]}))  # type: ignore[arg-type]
+    extractor.extract_turns(SESSION_TURNS, ExtractionContext(session_date="8 May 2023"))
+    messages, output = extractor.last_exchange
+    assert messages[0]["role"] == "system" and "Session date: 8 May 2023" in messages[1]["content"]
+    assert output.memories[0].subject == "Caroline"
 
 
 def test_llm_extractor_parses_structured_output() -> None:

@@ -47,8 +47,9 @@ model is never compared: dimension mismatches raise an error, and on startup the
 stored by a different model. A database created by v1 is refused with a clear message instead of being
 misread.
 
-**One value per slot.** After ranking, only the best-ranked active value of each `(subject, key)` slot is
-injected, so contradictory facts never reach the prompt together. Events are exempt, because they accumulate.
+**No per-key filter at query time.** Contradictions are resolved when a memory is written: a replacing fact
+deprecates the old value. Every active memory is therefore safe to inject, and a key such as `hobby` may
+legitimately contribute several values.
 
 ## Extraction
 
@@ -65,19 +66,34 @@ applies, the ids of the turns that support it, and a confidence.
   Provenance is what makes evidence recall measurable.
 - *Temporal grounding:* "yesterday" or "last week" is resolved against the session date at extraction time,
   which the temporal questions depend on.
-- *Updates:* the prompt lists the conversation's existing slot keys. When a changing fact (job, home city,
-  relationship status) reuses its key, the store deprecates the old value and records which memory replaced
-  it.
+- *Updates:* the prompt lists the conversation's existing keys so that facts about the same thing share
+  one. The model sets `replaces_previous` only when the conversation says an earlier fact under that key no
+  longer holds (a new job, a move, a breakup). The store then deprecates the existing value most similar to
+  the new one, judged by stored vectors, and records which memory replaced it. Everything else accumulates.
+  The regex extractor's keys are single-valued by construction, so its new values always replace old ones.
 
 **Failure policy.** In the live API a failed or rate-limited LLM call falls back to the regex rules, so a
 conversation keeps working. In strict mode, which the benchmark uses, it raises instead. A run therefore
 stops rather than silently mixing in regex extractions, and an exhausted daily quota is always raised.
+
+**Teacher data.** Every benchmark extraction is logged as its prompt plus the validated output, in
+`bench/runs/v2/extractions.jsonl`. That log is the training set for distilling a smaller extractor.
 
 **Provider-agnostic client.** `LLMClient` speaks the OpenAI-compatible chat API, so Gemini, Ollama, vLLM and
 OpenAI all work by changing `LLM_BASE_URL`. That is how a locally served fine-tuned model can replace the
 hosted one later. Every request and reply is cached in SQLite under a hash of the full request, so reruns
 cost nothing and interrupted runs resume. The client paces its requests, honours retry hints on 429 and 503,
 and raises `QuotaExhausted` on a daily limit.
+
+## What the benchmark caught
+
+The first v2 run kept v1's rule that each subject and key holds one value, so any new value deprecated the
+old one. The model reuses broad keys, and on conversation `conv-26` that rule deprecated 77 of the 139
+memories it extracted (55%). For example, "Caroline loves the book Becoming Nicole" was replaced by
+"Caroline's favorite color is blue" under the key `favorite_book`, which was in turn replaced by her favourite
+song. With 62 memories left, v2's evidence recall@10 on that conversation was 0.39, against 0.64 for raw-turn
+RAG. The `replaces_previous` flag described above is the fix, and all reported results come from the
+re-extracted run.
 
 ## Benchmark protocol
 

@@ -25,7 +25,8 @@ class Extractor(Protocol):
 
 class RegexExtractor:
     """Hand-written patterns for explicit first-person statements. Free and instant, but narrow:
-    it only recognises phrasings such as "my preferred language is ..." and "i live in ..."."""
+    it only recognises phrasings such as "my preferred language is ..." and "i live in ...".
+    Each pattern fills a single-valued slot, so a new value always replaces the old one."""
 
     def extract_turns(self, turns: Sequence[TurnInput], context: ExtractionContext) -> list[MemoryCandidate]:
         candidates: list[MemoryCandidate] = []
@@ -53,6 +54,7 @@ class RegexExtractor:
 
         unique: dict[tuple[str, str], MemoryCandidate] = {}
         for candidate in candidates:
+            candidate.replaces_previous = True
             unique[(candidate.key, candidate.normalized_value)] = candidate
 
         return list(unique.values())
@@ -262,8 +264,11 @@ group." Never use a pronoun in place of the name.
 - subject: the person the fact is about, named as in the conversation.
 - memory_type: "event" for something that happened or will happen at a particular time; otherwise \
 "preference", "fact", "constraint", "instruction" or "commitment".
-- key: a short snake_case label without the subject's name. When a fact that can change (job, \
-relationship_status, home_city, pet, favorite_book) updates one listed under "Known keys", reuse that key.
+- key: a short snake_case label without the subject's name, such as job, home_city, pet, hobby or \
+favorite_book. Reuse a key listed under "Known keys" when the fact is about the same thing.
+- replaces_previous: true only when the conversation says an earlier fact under the same key is no longer \
+true, as with a new job, a move or a breakup. False when the fact adds to what is known, such as another \
+hobby or another favourite book, and always false for events.
 - event_date: resolve relative times such as "yesterday", "last week" or "next month" against the session \
 date, written as YYYY-MM-DD, YYYY-MM or YYYY. Use "" when the time is unknown or the fact is not an event. \
 When the time is approximate, say so in value too, e.g. "the week before 9 June 2023".
@@ -294,6 +299,7 @@ class ExtractedMemory(BaseModel):
     value: str
     event_date: str
     evidence: list[str]
+    replaces_previous: bool
     confidence: float
 
     @field_validator("key")
@@ -331,13 +337,17 @@ class LLMExtractor:
         self.calls = 0
         self.failures = 0
         self.dropped_evidence = 0
+        # Prompt and validated output of the last successful call: teacher data for distilling a smaller model.
+        self.last_exchange: tuple[list[dict[str, str]], ExtractionOutput] | None = None
 
     def extract_turns(self, turns: Sequence[TurnInput], context: ExtractionContext) -> list[MemoryCandidate]:
+        self.last_exchange = None
         if not turns:
             return []
         self.calls += 1
+        messages = self._messages(turns, context)
         try:
-            output = self.client.chat_json(self._messages(turns, context), ExtractionOutput)
+            output = self.client.chat_json(messages, ExtractionOutput)
         except QuotaExhausted:
             raise
         except (LLMError, ValidationError) as exc:
@@ -346,6 +356,7 @@ class LLMExtractor:
                 raise
             logger.warning("LLM extraction failed (%s); using the regex extractor for this batch", exc)
             return self.fallback.extract_turns(turns, context)
+        self.last_exchange = (messages, output)
         return self._to_candidates(output, turns)
 
     def _messages(self, turns: Sequence[TurnInput], context: ExtractionContext) -> list[dict[str, str]]:
@@ -382,6 +393,7 @@ class LLMExtractor:
                     subject=subject,
                     event_date=item.event_date or None,
                     evidence=evidence,
+                    replaces_previous=item.replaces_previous and item.memory_type != "event",
                 )
             )
         return candidates

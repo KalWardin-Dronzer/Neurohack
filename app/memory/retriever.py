@@ -10,7 +10,7 @@ from app.config import Settings
 
 from .embedder import EmbeddingModel
 from .store import MemoryStore
-from .types import MemoryMatch, MemoryType
+from .types import MemoryMatch
 
 logger = logging.getLogger(__name__)
 
@@ -74,8 +74,9 @@ class HybridRetriever:
         fused = reciprocal_rank_fusion(rankings, k=self.settings.rrf_k)
         floor = self.settings.retrieval_min_similarity
 
+        # Contradictions are resolved at write time (a replacing fact deprecates the old one), so every active
+        # memory is safe to inject; a key such as "hobby" may hold several true values.
         filtered: list[MemoryMatch] = []
-        seen_slots: set[tuple[str, str]] = set()
         for memory_id in sorted(fused, key=fused.__getitem__, reverse=True):
             row = id_to_row.get(memory_id)
             if row is None:
@@ -83,12 +84,6 @@ class HybridRetriever:
             similarity = dense_scores.get(memory_id)
             if floor is not None and similarity is not None and similarity < floor:
                 continue
-            # One value per slot so contradictory facts are never injected together.
-            if row["type"] != MemoryType.EVENT.value:
-                slot = (row["subject"], row["key"])
-                if slot in seen_slots:
-                    continue
-                seen_slots.add(slot)
             filtered.append(self._to_match(row, fused[memory_id], similarity, lexical_scores.get(memory_id)))
             if len(filtered) >= top_k:
                 break

@@ -31,6 +31,8 @@ class MemoryCandidate:
     object: Optional[str] = None
     event_date: Optional[str] = None
     evidence: tuple[str, ...] = ()
+    # True when this fact makes an earlier value of the same subject and key untrue (a move, a new job).
+    replaces_previous: bool = False
 
     @property
     def normalized_value(self) -> str:
@@ -38,7 +40,6 @@ class MemoryCandidate:
 
     @property
     def is_event(self) -> bool:
-        # Events accumulate; every other type is a slot that a newer value supersedes.
         return self.memory_type is MemoryType.EVENT
 
     def search_text(self) -> str:

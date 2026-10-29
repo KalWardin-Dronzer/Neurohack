@@ -106,30 +106,77 @@ def test_v1_database_is_refused(tmp_path) -> None:
         MemoryStore(str(path))
 
 
-def test_events_accumulate_and_slots_supersede_per_subject(engine: MemoryEngine) -> None:
+def _states(engine: MemoryEngine) -> tuple[set, set]:
+    memories = engine.list_memories(SESSION)
+    active = {(m["subject"], m["key"], m["value"]) for m in memories if m["status"] == MemoryStatus.ACTIVE.value}
+    deprecated = {(m["subject"], m["key"], m["value"]) for m in memories if m["status"] == MemoryStatus.DEPRECATED.value}
+    return active, deprecated
+
+
+def test_facts_accumulate_unless_marked_as_replacing(engine: MemoryEngine) -> None:
     event = MemoryType.EVENT
     engine.store_candidates(
         SESSION,
         [
             _fact("support_group", "Caroline attended an LGBTQ support group", "Caroline", event),
             _fact("pride_parade", "Caroline went to a pride parade", "Caroline", event),
-            _fact("favorite_color", "blue", "Caroline"),
-            _fact("favorite_color", "green", "Melanie"),
+            _fact("hobby", "Caroline paints", "Caroline"),
+            _fact("home_city", "Caroline lives in Boston", "Caroline"),
+            _fact("home_city", "Melanie lives in Austin", "Melanie"),
         ],
         source_turn=1,
     )
-    engine.store_candidates(SESSION, [_fact("favorite_color", "red", "Caroline")], source_turn=2)
+    move = MemoryCandidate(MemoryType.FACT, "home_city", "Caroline lives in Pune", 0.9, subject="Caroline", replaces_previous=True)
+    engine.store_candidates(SESSION, [_fact("hobby", "Caroline plays the piano", "Caroline"), move], source_turn=2)
 
-    memories = engine.list_memories(SESSION)
-    active = {(m["subject"], m["key"], m["value"]) for m in memories if m["status"] == MemoryStatus.ACTIVE.value}
-    deprecated = {(m["subject"], m["key"], m["value"]) for m in memories if m["status"] == MemoryStatus.DEPRECATED.value}
+    active, deprecated = _states(engine)
+    assert {
+        ("Caroline", "support_group", "Caroline attended an LGBTQ support group"),
+        ("Caroline", "pride_parade", "Caroline went to a pride parade"),
+        ("Caroline", "hobby", "Caroline paints"),
+        ("Caroline", "hobby", "Caroline plays the piano"),
+        ("Caroline", "home_city", "Caroline lives in Pune"),
+        ("Melanie", "home_city", "Melanie lives in Austin"),
+    } == active
+    assert deprecated == {("Caroline", "home_city", "Caroline lives in Boston")}
+    pune = next(m for m in engine.list_memories(SESSION) if m["value"] == "Caroline lives in Pune")
+    boston = next(m for m in engine.list_memories(SESSION) if m["value"] == "Caroline lives in Boston")
+    assert pune["supersedes_memory_id"] == boston["memory_id"]
+    assert engine.conflict_rate(SESSION) == pytest.approx(1 / 3)
 
-    assert ("Caroline", "support_group", "Caroline attended an LGBTQ support group") in active
-    assert ("Caroline", "pride_parade", "Caroline went to a pride parade") in active
-    assert ("Caroline", "favorite_color", "red") in active
-    assert ("Melanie", "favorite_color", "green") in active
-    assert deprecated == {("Caroline", "favorite_color", "blue")}
-    assert engine.conflict_rate(SESSION) == 0.0
+
+def test_replacement_deprecates_only_the_most_similar_value(engine: MemoryEngine) -> None:
+    engine.store_candidates(
+        SESSION,
+        [_fact("life", "Caroline lives in Boston", "Caroline"), _fact("life", "Caroline works at a bakery", "Caroline")],
+        source_turn=1,
+    )
+    update = MemoryCandidate(MemoryType.FACT, "life", "Caroline lives in Pune now", 0.9, subject="Caroline", replaces_previous=True)
+    engine.store_candidates(SESSION, [update], source_turn=2)
+
+    active, deprecated = _states(engine)
+    assert deprecated == {("Caroline", "life", "Caroline lives in Boston")}
+    assert ("Caroline", "life", "Caroline works at a bakery") in active
+
+
+def test_restating_a_value_deprecates_nothing(engine: MemoryEngine) -> None:
+    engine.store_candidates(SESSION, [_fact("hobby", "Caroline paints", "Caroline")], source_turn=1)
+    engine.store_candidates(SESSION, [_fact("hobby", "Caroline plays the piano", "Caroline")], source_turn=2)
+    engine.store_candidates(SESSION, [_fact("hobby", "Caroline  paints", "Caroline")], source_turn=3)
+
+    active, deprecated = _states(engine)
+    assert deprecated == set()
+    assert {value for _, _, value in active} == {"Caroline paints", "Caroline plays the piano"}
+
+
+def test_retrieval_returns_several_values_of_one_key(engine: MemoryEngine) -> None:
+    engine.store_candidates(
+        SESSION,
+        [_fact("hobby", "Melanie paints landscapes", "Melanie"), _fact("hobby", "Melanie makes pottery", "Melanie")],
+        source_turn=1,
+    )
+    keys = [m.key for m in engine.retriever.retrieve(SESSION, "What hobbies does Melanie have?", current_turn=2)]
+    assert keys.count("hobby") == 2
 
 
 def test_duplicate_event_merges_evidence(engine: MemoryEngine) -> None:
