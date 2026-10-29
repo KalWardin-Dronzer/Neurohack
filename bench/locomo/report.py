@@ -101,14 +101,15 @@ def _retrieval_section(data: dict) -> list[str]:
         lines.append(f"| {floor} | {pct(result['by_k']['10']['recall'])} | {result['by_k']['10']['mean_items']:.1f} |")
 
     memory = data["memory_store"]
+    unsupported = memory["memories_without_evidence"]
+    provenance = "Every memory cites at least one valid turn." if unsupported == 0 else f"{unsupported} memories cite no valid turn."
     lines += [
         "",
         "### What v2 stored",
         "",
         f"{memory['active_memories']:,} active memories from {dataset['sessions']} sessions "
         f"({memory['memories_per_session']:.1f} per session; {100 * memory['event_share']:.0f}% events), "
-        f"citing {memory['evidence_per_memory']:.2f} evidence turns each on average. "
-        f"{memory['memories_without_evidence']} memories cite no valid turn. "
+        f"citing {memory['evidence_per_memory']:.2f} evidence turns each on average. {provenance} "
         f"v1's regex extractor stored {memory['v1_memories']:,} memories from the same {dataset['turns']:,} turns.",
         "",
     ]
@@ -186,8 +187,26 @@ def render(retrieval: dict | None, qa: dict | None) -> str:
 
 def render_readme_summary(retrieval: dict | None, qa: dict | None) -> str:
     """The README's headline table, built from the same estimates as RESULTS.md so the two cannot drift."""
-    if not retrieval or not qa:
+    if not retrieval:
         return "*LoCoMo results appear here once `python -m bench.locomo report` has run.*"
+    if not qa:
+        lines = [
+            "## Results on LoCoMo",
+            "",
+            "| System | Evidence recall@10 | Context tokens at k = 10 |",
+            "|---|---|---|",
+        ]
+        for name in MAIN_RETRIEVAL:
+            by_k = retrieval["systems"][name]["by_k"]["10"]
+            lines.append(f"| {LABELS[name]} | {pct(by_k['recall'])} | {by_k['mean_context_tokens']:,.0f} |")
+        lines += [
+            "",
+            f"Recall covers all {retrieval['dataset']['questions_with_evidence']:,} questions with annotated evidence; "
+            "brackets are 95% bootstrap intervals. LLM-judged question answering on a stratified subset is still "
+            "running within the free-tier quota. Per-category tables, ablations and the protocol are in "
+            "[RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).",
+        ]
+        return "\n".join(lines)
     lines = [
         "## Results on LoCoMo",
         "",

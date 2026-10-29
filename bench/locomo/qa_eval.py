@@ -20,6 +20,8 @@ from .systems import Retrieved
 logger = logging.getLogger(__name__)
 
 QA_K = 10
+QA_SIZE = 200
+QA_SEED = 2026
 REFERENCE_SYSTEM = "v2"
 
 RetrieveFn = Callable[[Conversation, Question, int], Retrieved]

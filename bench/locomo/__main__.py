@@ -162,6 +162,7 @@ def cmd_retrieval(args) -> int:
     from .retrieval_eval import DEV_CONVERSATION, evaluate_system
     from .stats import percentile
 
+    commit = _git_commit()  # the code that produces the results, recorded before anything can change
     path, conversations, repairs = _load()
     settings = _settings()
     queries, turn_rag, v1, v2 = _systems(settings)
@@ -209,7 +210,7 @@ def cmd_retrieval(args) -> int:
         {
             "dataset": _dataset_meta(conversations, repairs, path),
             "config": _config(settings, Models()),
-            "git_commit": _git_commit(),
+            "git_commit": commit,
             "dev_conversation": DEV_CONVERSATION,
             "category_counts": {data.CATEGORY_NAMES[c]: n for c, n in sorted(Counter(q.category for q in evaluable).items())},
             "query_embedding_ms": {"p50": percentile(queries.embed_ms, 50), "p95": percentile(queries.embed_ms, 95)},
@@ -228,6 +229,7 @@ def cmd_qa(args) -> int:
     from .retrieval_eval import DEV_CONVERSATION
     from .systems import FullContext
 
+    commit = _git_commit()  # the code that produces the results, recorded before anything can change
     path, conversations, repairs = _load()
     settings = _settings()
     models = Models()
@@ -258,7 +260,7 @@ def cmd_qa(args) -> int:
         {
             "dataset": _dataset_meta(conversations, repairs, path),
             "config": _config(settings, models),
-            "git_commit": _git_commit(),
+            "git_commit": commit,
             "dev_conversation": DEV_CONVERSATION,
             "models": {"answer": models.answer, "judge": models.judge, "extraction": models.extraction},
             "k": QA_K,
@@ -322,8 +324,10 @@ def main(argv: list[str] | None = None) -> int:
     ingest.set_defaults(func=cmd_ingest)
     sub.add_parser("retrieval").set_defaults(func=cmd_retrieval)
     qa = sub.add_parser("qa")
-    qa.add_argument("--size", type=int, default=200)
-    qa.add_argument("--seed", type=int, default=2026)
+    from .qa_eval import QA_SEED, QA_SIZE
+
+    qa.add_argument("--size", type=int, default=QA_SIZE)
+    qa.add_argument("--seed", type=int, default=QA_SEED)
     qa.add_argument("--answer-rpm", type=float, default=12.0)
     qa.add_argument("--judge-rpm", type=float, default=10.0)
     qa.add_argument("--workers", type=int, default=4, help="concurrent LLM calls; pacing still caps requests per minute")
