@@ -4,6 +4,7 @@
     python -m bench.locomo ingest           build v2 memories (one LLM call per session; resumable)
     python -m bench.locomo retrieval        evidence recall for every system (no LLM calls)
     python -m bench.locomo qa               LLM-judged QA on a stratified subset (cached, resumable)
+    python -m bench.locomo distill-eval     extractors compared on the conversations held out from distillation
     python -m bench.locomo report [--check] regenerate RESULTS.md from bench/results
     python -m bench.locomo judge-sample     export judged answers for you to label by hand
     python -m bench.locomo judge-agreement  agreement between your labels and the LLM judge
@@ -60,12 +61,20 @@ def _settings():
     )
 
 
-def _client(settings, model: str, rpm: float):
+def _is_local(url: str) -> bool:
+    from urllib.parse import urlparse
+
+    return urlparse(url).hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
+
+
+def _client(settings, model: str, rpm: float, base_url: str | None = None, timeout_s: float = 120.0):
     from app.llm.client import LLMClient
 
-    if not settings.llm_api_key:
+    url = base_url or settings.llm_base_url
+    key = settings.llm_api_key if url == settings.llm_base_url else ""  # the provider key never goes to another endpoint
+    if not key and not _is_local(url):
         sys.exit("LLM_API_KEY is empty: put it in .env (see .env.example)")
-    return LLMClient(settings.llm_base_url, settings.llm_api_key, model, cache_path=str(CACHE), requests_per_minute=rpm, max_retries=8)
+    return LLMClient(url, key, model, cache_path=str(CACHE), requests_per_minute=rpm or None, max_retries=8, timeout_s=timeout_s)
 
 
 def _git_commit() -> str:
@@ -140,15 +149,35 @@ def cmd_download(_args) -> int:
 
 def cmd_ingest(args) -> int:
     from app.llm.client import QuotaExhausted
+    from app.memory.extractor import LLMExtractor
+    from app.memory.service import build_embedder
+
+    from .systems import MemoryV2, QueryEmbeddings
 
     _, conversations, _ = _load()
+    if args.conversations:
+        wanted = set(args.conversations.split(","))
+        unknown = wanted - {c.sample_id for c in conversations}
+        if unknown:
+            sys.exit(f"unknown conversations: {sorted(unknown)}")
+        conversations = [c for c in conversations if c.sample_id in wanted]
     settings = _settings()
-    client = _client(settings, args.model, args.rpm)
-    _, _, _, v2 = _systems(settings, client)
+    client = _client(settings, args.model, args.rpm, base_url=args.base_url, timeout_s=args.timeout)
+    embedder = build_embedder(settings)
+    v2 = MemoryV2(
+        settings,
+        embedder,
+        QueryEmbeddings(embedder),
+        client,
+        args.runs_dir,
+        extractor_factory=lambda: LLMExtractor(client, strict=True, max_tokens=args.max_tokens),
+        tolerate_invalid_output=args.tolerate_invalid_output,
+    )
     try:
         for conversation in conversations:
             v2.prepare(conversation)
-            print(f"{conversation.sample_id}: {v2.stats(conversation).memories} active memories")
+            invalid = v2.progress(conversation.sample_id).get("invalid_output", [])
+            print(f"{conversation.sample_id}: {v2.stats(conversation).memories} active memories; {len(invalid)} sessions with invalid output")
     except QuotaExhausted as exc:
         print(f"stopped: {exc}")
         return 2
@@ -277,6 +306,100 @@ def cmd_qa(args) -> int:
     return 0
 
 
+def cmd_distill_eval(args) -> int:
+    from app.memory.extractor import RegexExtractor
+    from app.memory.service import build_embedder
+    from distill import config as distill
+    from distill.dataset import DATA_DIR, sha256_of, split_conversations
+
+    from .distill_eval import compare, extraction_stats, latency_stats, read_outputs, regex_outputs
+    from .retrieval_eval import DEV_CONVERSATION
+    from .systems import MemoryV2, QueryEmbeddings, TurnRAG
+
+    commit = _git_commit()
+    path, conversations, repairs = _load()
+    manifest = json.loads((DATA_DIR / "split.json").read_text(encoding="utf-8"))
+    split = split_conversations((c.sample_id for c in conversations), DEV_CONVERSATION, manifest["seed"])
+    if any(split[name] != manifest[name]["conversations"] for name in split):
+        sys.exit(f"{DATA_DIR / 'split.json'} does not match the split its seed draws; rerun `python -m distill prepare`")
+    test = [c for c in conversations if c.sample_id in split["test"]]
+    test_ids = {c.sample_id for c in test}
+    training = json.loads((distill.RUN_DIR / "training.json").read_text(encoding="utf-8"))
+
+    settings = _settings()
+    embedder = build_embedder(settings)
+    queries = QueryEmbeddings(embedder)
+    turn_rag = TurnRAG(embedder, queries)
+    stores = {
+        "teacher": MemoryV2(settings, embedder, queries, None, V2_DIR),
+        "student": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / args.student),
+        "base": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / args.base),
+        "regex": MemoryV2(settings, embedder, queries, None, distill.INGEST_DIR / "regex", extractor_factory=RegexExtractor),
+    }
+    try:
+        for question in data.evaluable_questions(test):
+            queries.get(question.text)
+        for conversation in test:
+            turn_rag.prepare(conversation)
+            for store in stores.values():
+                store.prepare(conversation)  # student and base must already be ingested; regex is built here
+        retrievers = {"turn_rag": turn_rag.retrieve}
+        retrievers.update({name: (lambda c, q, k, store=store: store.retrieve(c, q, k, mode="rrf")) for name, store in stores.items()})
+        systems, differences = compare(test, retrievers, "student", ("teacher", "base", "regex", "turn_rag"))
+        teacher_outputs = read_outputs(V2_DIR / "extractions.jsonl", test_ids)
+        outputs = {
+            "teacher": teacher_outputs,
+            "student": read_outputs(stores["student"].runs_dir / "extractions.jsonl", test_ids),
+            "base": read_outputs(stores["base"].runs_dir / "extractions.jsonl", test_ids),
+            "regex": regex_outputs(test),
+        }
+        extraction = {}
+        for name, store in stores.items():
+            stored = sum(len(store.engines[c.sample_id].list_memories(c.sample_id, status="active", limit=100_000)) for c in test)
+            stats = extraction_stats(test, outputs[name], teacher_outputs, stored)
+            stats["invalid_output_sessions"] = sum(len(store.progress(c.sample_id).get("invalid_output", [])) for c in test)
+            stats["latency"] = latency_stats(store.runs_dir / "timings.jsonl", test_ids)
+            extraction[name] = stats
+    finally:
+        for store in stores.values():
+            store.close()
+
+    evidence_questions = [q for q in data.evaluable_questions(test) if q.evidence]
+    _write_json(
+        report.DISTILL_PATH,
+        {
+            "dataset": _dataset_meta(conversations, repairs, path),
+            "config": _config(settings, Models()),
+            "git_commit": commit,
+            "split": {
+                "seed": manifest["seed"],
+                **{name: {"conversations": manifest[name]["conversations"], "sessions": manifest[name]["sessions"]} for name in split},
+                "test_questions": len(evidence_questions),
+                "test_category_counts": {data.CATEGORY_NAMES[c]: n for c, n in sorted(Counter(q.category for q in evidence_questions).items())},
+            },
+            "models": {
+                "teacher": Models().extraction,
+                "student": args.student,
+                "base": args.base,
+                "base_model": training["config"]["base_model"],
+                "base_revision": training["config"]["base_revision"],
+                "adapter_sha256": sha256_of(distill.RUN_DIR / "adapter" / "adapter_model.safetensors"),
+                "serving": "distill.serve: transformers, bf16, greedy decoding, no output constraints",
+            },
+            "training": {
+                key: training[key]
+                for key in ("epochs", "best_epoch", "optimizer_steps", "train_examples", "val_examples", "train_reply_tokens",
+                            "trainable_parameters", "total_parameters", "peak_memory_gb", "wall_seconds", "environment")
+            }
+            | {"config": {key: training["config"][key] for key in ("lora_rank", "lora_alpha", "lora_dropout", "lora_targets", "learning_rate", "epochs", "grad_accum")}},
+            "systems": systems,
+            "paired_recall_at_10_differences": differences,
+            "extraction": extraction,
+        },
+    )
+    return 0
+
+
 def cmd_report(args) -> int:
     return report.write_or_check(args.check)
 
@@ -318,9 +441,15 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="python -m bench.locomo", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("download").set_defaults(func=cmd_download)
-    ingest = sub.add_parser("ingest")
+    ingest = sub.add_parser("ingest", help="build memories with an extraction model (the teacher by default)")
     ingest.add_argument("--model", default=Models().extraction)
-    ingest.add_argument("--rpm", type=float, default=12.0)
+    ingest.add_argument("--rpm", type=float, default=12.0, help="request pacing; 0 for none")
+    ingest.add_argument("--base-url", default=None, help="an OpenAI-compatible endpoint other than LLM_BASE_URL, e.g. a local server")
+    ingest.add_argument("--runs-dir", type=Path, default=V2_DIR)
+    ingest.add_argument("--conversations", default="", help="comma-separated sample ids; all by default")
+    ingest.add_argument("--max-tokens", type=int, default=None)
+    ingest.add_argument("--timeout", type=float, default=120.0, help="seconds per request")
+    ingest.add_argument("--tolerate-invalid-output", action="store_true", help="record a session whose output stays invalid instead of stopping")
     ingest.set_defaults(func=cmd_ingest)
     sub.add_parser("retrieval").set_defaults(func=cmd_retrieval)
     qa = sub.add_parser("qa")
@@ -332,6 +461,12 @@ def main(argv: list[str] | None = None) -> int:
     qa.add_argument("--judge-rpm", type=float, default=10.0)
     qa.add_argument("--workers", type=int, default=4, help="concurrent LLM calls; pacing still caps requests per minute")
     qa.set_defaults(func=cmd_qa)
+    from distill.config import BASE_NAME, STUDENT_NAME
+
+    distill_eval = sub.add_parser("distill-eval", help="compare extractors on the conversations held out from distillation")
+    distill_eval.add_argument("--student", default=STUDENT_NAME)
+    distill_eval.add_argument("--base", default=BASE_NAME)
+    distill_eval.set_defaults(func=cmd_distill_eval)
     rep = sub.add_parser("report")
     rep.add_argument("--check", action="store_true")
     rep.set_defaults(func=cmd_report)

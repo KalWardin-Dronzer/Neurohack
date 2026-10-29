@@ -6,6 +6,7 @@ from pathlib import Path
 RESULTS_DIR = Path("bench/results")
 RETRIEVAL_PATH = RESULTS_DIR / "locomo_retrieval.json"
 QA_PATH = RESULTS_DIR / "locomo_qa.json"
+DISTILL_PATH = RESULTS_DIR / "locomo_distill.json"
 RESULTS_MD = Path("RESULTS.md")
 README = Path("README.md")
 README_START, README_END = "<!-- RESULTS:START -->", "<!-- RESULTS:END -->"
@@ -148,7 +149,86 @@ def _qa_section(data: dict) -> list[str]:
     return lines
 
 
-def render(retrieval: dict | None, qa: dict | None) -> str:
+EXTRACTOR_LABELS = {
+    "teacher": "Teacher: `{teacher}` (API)",
+    "student": "Student: {base_short} + LoRA (local)",
+    "base": "Base: {base_short}, no fine-tuning (local)",
+    "regex": "Regex rules (no model)",
+    "turn_rag": "Raw-turn RAG (no extraction)",
+}
+
+
+def _extractor_label(name: str, data: dict) -> str:
+    models = data["models"]
+    return EXTRACTOR_LABELS[name].format(teacher=models["teacher"], base_short=models["base_model"].split("/")[-1])
+
+
+def _distill_section(data: dict) -> list[str]:
+    split, models, training, systems = data["split"], data["models"], data["training"], data["systems"]
+    environment, config = training["environment"], training["config"]
+    test = split["test"]
+    lines = [
+        "## Distilled local extractor",
+        "",
+        f"`{models['base_model']}` (revision `{models['base_revision'][:7]}`) was fine-tuned with LoRA on the teacher's "
+        f"extractions from {split['train']['sessions']} sessions of {len(split['train']['conversations'])} conversations, "
+        f"with {', '.join(split['val']['conversations'])} for validation. The table covers the held-out conversations "
+        f"{', '.join(test['conversations'])}: {test['sessions']} sessions and {split['test_questions']} questions with "
+        "evidence, which no model was tuned on. Every row stores memories in the same v2 engine and retrieves them with "
+        f"the same RRF settings; only the extractor differs. The local models ran through `distill.serve` "
+        f"({models['serving'].split(': ', 1)[1]}) on an {environment['gpu']}.",
+        "",
+        "| Extractor | Recall@5 | Recall@10 | Recall@20 | Memories per session | Cited turns vs teacher (precision / recall) "
+        "| Sessions with invalid output | Seconds per session (p50) |",
+        "|---|---|---|---|---|---|---|---|",
+    ]
+    for name in ("teacher", "student", "base", "regex", "turn_rag"):
+        by_k = systems[name]["by_k"]
+        cells = [pct(by_k["5"]["recall"]), pct(by_k["10"]["recall"]), pct(by_k["20"]["recall"])]
+        stats = data["extraction"].get(name)
+        if stats is None:
+            cells += ["n/a"] * 4
+        else:
+            agreement = stats["cited_turns_vs_teacher"]
+            latency = stats["latency"]
+            cells += [
+                f"{stats['memories_per_session']:.1f}",
+                "reference" if name == "teacher" else f"{100 * agreement['precision']:.0f}% / {100 * agreement['recall']:.0f}%",
+                f"{stats['invalid_output_sessions']} of {stats['sessions']}",
+                f"{latency['seconds_p50']:.1f}" if latency else "n/a",
+            ]
+        lines.append(f"| {_extractor_label(name, data)} | " + " | ".join(cells) + " |")
+
+    lines += ["", "Paired differences in recall@10 on the same questions (an interval that excludes 0 is a real gap):", ""]
+    short = {"teacher": "teacher", "base": "untuned base model", "regex": "regex rules", "turn_rag": "raw-turn RAG"}
+    for key, estimate in data["paired_recall_at_10_differences"].items():
+        lines.append(f"- student minus {short[key.split('_minus_', 1)[1]]}: {signed_pct(estimate)}")
+
+    latency = data["extraction"]["student"]["latency"]
+    epochs = training["epochs"]
+    val_losses = ", ".join(f"{epoch['val_loss']:.3f}" for epoch in epochs[1:])
+    base_parameters = training["total_parameters"] - training["trainable_parameters"]
+    lines += [
+        "",
+        f"Training: {config['epochs']} epochs over {training['train_examples']} sessions ({training['train_reply_tokens']:,} "
+        f"reply tokens), batches of {config['grad_accum']}, learning rate {config['learning_rate']:g}. LoRA rank "
+        f"{config['lora_rank']} (alpha {config['lora_alpha']}, dropout {config['lora_dropout']:g}) on "
+        f"{', '.join(config['lora_targets'])}: {training['trainable_parameters']:,} trainable parameters, "
+        f"{100 * training['trainable_parameters'] / base_parameters:.1f}% of the {base_parameters / 1e6:.0f}M in the model. "
+        f"Validation loss per reply token was {epochs[0]['val_loss']:.3f} for the base model and {val_losses} after each "
+        f"epoch; the epoch {training['best_epoch']} adapter is the one evaluated. Training took "
+        f"{training['wall_seconds'] / 60:.0f} minutes with a peak of {training['peak_memory_gb']:.1f} GB of GPU memory.",
+        "",
+        f"The student wrote {latency['completion_tokens_per_session']:.0f} tokens per session at "
+        f"{latency['tokens_per_second']:.1f} tokens per second ({latency['seconds_p95']:.1f} s per session at p95). "
+        "Invalid output means the reply still failed schema validation after one repair request; such a session "
+        "stores no memories, and it counts against recall rather than being dropped.",
+        "",
+    ]
+    return lines
+
+
+def render(retrieval: dict | None, qa: dict | None, distill: dict | None = None) -> str:
     lines = [
         "# LoCoMo results",
         "",
@@ -171,6 +251,8 @@ def render(retrieval: dict | None, qa: dict | None) -> str:
         lines += _retrieval_section(retrieval)
     if qa:
         lines += _qa_section(qa)
+    if distill:
+        lines += _distill_section(distill)
     if source:
         config = source["config"]
         lines += [
@@ -185,10 +267,37 @@ def render(retrieval: dict | None, qa: dict | None) -> str:
     return "\n".join(lines).rstrip("\n") + "\n"
 
 
-def render_readme_summary(retrieval: dict | None, qa: dict | None) -> str:
+def _readme_distill(distill: dict) -> list[str]:
+    split, extraction = distill["split"], distill["extraction"]
+    lines = [
+        "",
+        "### A distilled extractor that runs on a laptop",
+        "",
+        "| Extractor | Evidence recall@10 on held-out conversations | Runs on |",
+        "|---|---|---|",
+    ]
+    gpu = distill["training"]["environment"]["gpu"].replace("NVIDIA GeForce ", "")
+    for name in ("teacher", "student", "base", "turn_rag"):
+        where = {"teacher": "Gemini API", "turn_rag": "no extraction"}.get(name)
+        if where is None:
+            where = f"{gpu}, {extraction[name]['latency']['seconds_p50']:.0f} s per session"
+        lines.append(f"| {_extractor_label(name, distill)} | {pct(distill['systems'][name]['by_k']['10']['recall'])} | {where} |")
+    lines += [
+        "",
+        f"The student is `{distill['models']['base_model']}` fine-tuned with LoRA on the teacher's extractions from "
+        f"{len(split['train']['conversations'])} conversations; the table covers the {len(split['test']['conversations'])} "
+        f"conversations held out from training ({split['test_questions']} questions). Training, the protocol and the "
+        "paired differences are in [RESULTS.md](RESULTS.md#distilled-local-extractor).",
+    ]
+    return lines
+
+
+def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict | None = None) -> str:
     """The README's headline table, built from the same estimates as RESULTS.md so the two cannot drift."""
     if not retrieval:
         return "*LoCoMo results appear here once `python -m bench.locomo report` has run.*"
+    if distill:
+        return "\n".join([render_readme_summary(retrieval, qa), *_readme_distill(distill)])
     if not qa:
         lines = [
             "## Results on LoCoMo",
@@ -236,10 +345,10 @@ def _with_readme_summary(readme: str, summary: str) -> str:
 
 
 def write_or_check(check: bool) -> int:
-    retrieval, qa = _load(RETRIEVAL_PATH), _load(QA_PATH)
-    results_text = render(retrieval, qa)
+    retrieval, qa, distill = _load(RETRIEVAL_PATH), _load(QA_PATH), _load(DISTILL_PATH)
+    results_text = render(retrieval, qa, distill)
     readme_now = README.read_text(encoding="utf-8").replace("\r\n", "\n")
-    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa))
+    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa, distill))
     if check:
         current = RESULTS_MD.read_text(encoding="utf-8").replace("\r\n", "\n") if RESULTS_MD.exists() else ""
         stale = [name for name, ok in (("RESULTS.md", current == results_text), ("README.md", readme_now == readme_text)) if not ok]

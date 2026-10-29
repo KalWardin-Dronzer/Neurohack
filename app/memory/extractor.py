@@ -330,10 +330,11 @@ class LLMExtractor:
     instead of quietly mixing in regex extractions. QuotaExhausted is always raised.
     """
 
-    def __init__(self, client: LLMClient, max_known_keys: int = 150, strict: bool = False) -> None:
+    def __init__(self, client: LLMClient, max_known_keys: int = 150, strict: bool = False, max_tokens: int | None = None) -> None:
         self.client = client
         self.fallback = None if strict else RegexExtractor()
         self.max_known_keys = max_known_keys
+        self.max_tokens = max_tokens  # a cap on output length, so a small model stuck in a loop fails fast
         self.calls = 0
         self.failures = 0
         self.dropped_evidence = 0
@@ -347,7 +348,7 @@ class LLMExtractor:
         self.calls += 1
         messages = self._messages(turns, context)
         try:
-            output = self.client.chat_json(messages, ExtractionOutput)
+            output = self.client.chat_json(messages, ExtractionOutput, max_tokens=self.max_tokens)
         except QuotaExhausted:
             raise
         except (LLMError, ValidationError) as exc:

@@ -1,4 +1,11 @@
-.PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-report
+.PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-report \
+	distill-data distill-train distill-serve distill-serve-base bench-distill-ingest bench-distill
+
+# The training venv's interpreter (bin/python on macOS and Linux).
+TRAIN_PY ?= .venv-train/Scripts/python
+STUDENT_URL ?= http://127.0.0.1:8001/v1
+BASE_URL ?= http://127.0.0.1:8002/v1
+TEST_CONVERSATIONS ?= conv-41,conv-44,conv-47
 
 install:
 	python -m pip install -r requirements.txt
@@ -29,3 +36,24 @@ bench-qa:
 
 bench-report:
 	python -m bench.locomo report
+
+distill-data:
+	python -m distill prepare
+
+distill-train:
+	$(TRAIN_PY) -m distill.train
+
+distill-serve:
+	$(TRAIN_PY) -m distill.serve --name neurohack-extractor --adapter bench/runs/distill/qwen3.5-0.8b/adapter --port 8001
+
+distill-serve-base:
+	$(TRAIN_PY) -m distill.serve --name neurohack-extractor-base --port 8002
+
+bench-distill-ingest:
+	python -m bench.locomo ingest --base-url $(STUDENT_URL) --model neurohack-extractor --rpm 0 --timeout 600 --max-tokens 2048 \
+		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --runs-dir bench/runs/distill/ingest/neurohack-extractor
+	python -m bench.locomo ingest --base-url $(BASE_URL) --model neurohack-extractor-base --rpm 0 --timeout 600 --max-tokens 2048 \
+		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --runs-dir bench/runs/distill/ingest/neurohack-extractor-base
+
+bench-distill:
+	python -m bench.locomo distill-eval

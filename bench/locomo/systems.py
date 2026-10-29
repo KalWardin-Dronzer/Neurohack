@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass, replace
+from dataclasses import asdict, dataclass, replace
 from pathlib import Path
 from time import perf_counter
-from typing import Protocol
+from typing import Callable, Protocol
 
 import numpy as np
+from pydantic import ValidationError
 
 from app.config import Settings
 from app.llm.client import LLMClient
 from app.memory.embedder import EmbeddingModel
-from app.memory.extractor import LLMExtractor
+from app.memory.extractor import Extractor, LLMExtractor
 from app.memory.retriever import HybridRetriever
 from app.memory.service import MemoryEngine
 from app.memory.types import TurnInput
@@ -204,7 +205,12 @@ class IngestStats:
 
 
 class MemoryV2:
-    """The v2 engine: one database per conversation, filled session by session with LLM extraction."""
+    """The v2 engine: one database per conversation, filled session by session by an extractor.
+
+    By default the extractor is the LLM behind `extraction_client`, in strict mode. With
+    `tolerate_invalid_output`, a session whose output is still invalid after the repair round is recorded as a
+    failure with no memories instead of stopping the run, so a small model's failures are counted, not hidden.
+    """
 
     def __init__(
         self,
@@ -213,29 +219,38 @@ class MemoryV2:
         queries: QueryEmbeddings,
         extraction_client: LLMClient | None,
         runs_dir: Path,
+        *,
+        extractor_factory: Callable[[], Extractor] | None = None,
+        tolerate_invalid_output: bool = False,
     ) -> None:
         self.settings = settings
         self.embedder = _PrecomputedQueries(embedder, queries)
         self.client = extraction_client
         self.runs_dir = runs_dir
+        if extractor_factory is None and extraction_client is not None:
+            extractor_factory = lambda: LLMExtractor(extraction_client, strict=True)  # noqa: E731
+        self.extractor_factory = extractor_factory
+        self.tolerate_invalid_output = tolerate_invalid_output
         self.engines: dict[str, MemoryEngine] = {}
-        self.extractors: dict[str, LLMExtractor] = {}
+        self.extractors: dict[str, Extractor] = {}
         self._retrievers: dict[tuple[str, str, bool, float | None], HybridRetriever] = {}
 
     def _progress_path(self, sample_id: str) -> Path:
         return self.runs_dir / f"{sample_id}.progress.json"
 
+    def progress(self, sample_id: str) -> dict:
+        path = self._progress_path(sample_id)
+        return json.loads(path.read_text()) if path.exists() else {"sessions": []}
+
     def is_ingested(self, conversation: Conversation) -> bool:
-        path = self._progress_path(conversation.sample_id)
-        done = set(json.loads(path.read_text())["sessions"]) if path.exists() else set()
-        return done >= {session.number for session in conversation.sessions}
+        return set(self.progress(conversation.sample_id)["sessions"]) >= {session.number for session in conversation.sessions}
 
     def prepare(self, conversation: Conversation) -> None:
-        """Open the conversation's engine and ingest any sessions not done yet (requires an extraction client)."""
+        """Open the conversation's engine and ingest any sessions not done yet (requires an extractor)."""
         sample_id = conversation.sample_id
         if sample_id not in self.engines:
             self.runs_dir.mkdir(parents=True, exist_ok=True)
-            extractor = LLMExtractor(self.client, strict=True) if self.client is not None else None
+            extractor = self.extractor_factory() if self.extractor_factory is not None else None
             settings = replace(self.settings, database_path=str(self.runs_dir / f"{sample_id}.db"), extractor="llm")
             engine = MemoryEngine(settings, embedder=self.embedder, extractor=extractor or _NoExtraction())
             self.engines[sample_id] = engine
@@ -243,24 +258,42 @@ class MemoryV2:
                 self.extractors[sample_id] = extractor
 
         progress_path = self._progress_path(sample_id)
-        done = set(json.loads(progress_path.read_text())["sessions"]) if progress_path.exists() else set()
+        progress = self.progress(sample_id)
+        done, invalid = set(progress["sessions"]), set(progress.get("invalid_output", []))
         pending = [session for session in conversation.sessions if session.number not in done]
-        if pending and self.client is None:
+        if pending and self.extractor_factory is None:
             raise RuntimeError(f"{sample_id} is not fully ingested; run `python -m bench.locomo ingest` first")
         engine = self.engines[sample_id]
         extractor = self.extractors.get(sample_id)
         for session in pending:
             turns = [TurnInput(turn_id=t.index, speaker=t.speaker, text=t.text, ref=t.ref) for t in session.turns]
-            engine.ingest_session(sample_id, turns, session_date=session.date_text)
-            if extractor is not None and extractor.last_exchange is not None:
+            usage_before = asdict(self.client.usage) if self.client is not None else {}
+            started = perf_counter()
+            failure = None
+            try:
+                engine.ingest_session(sample_id, turns, session_date=session.date_text)
+            except ValidationError as exc:
+                if not self.tolerate_invalid_output:
+                    raise
+                failure = str(exc).splitlines()[0][:200]
+                invalid.add(session.number)
+                logger.warning("%s session %d: output still invalid after the repair round (%s)", sample_id, session.number, failure)
+            seconds = perf_counter() - started
+            exchange = getattr(extractor, "last_exchange", None) if failure is None else None
+            if exchange is not None:
                 # Every prompt and validated output, kept as the teacher dataset for distilling a smaller extractor.
-                messages, output = extractor.last_exchange
+                messages, output = exchange
                 record = {"sample_id": sample_id, "session": session.number, "messages": messages, "output": output.model_dump()}
                 with (self.runs_dir / "extractions.jsonl").open("a", encoding="utf-8") as handle:
                     handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+            if self.client is not None:
+                usage = {key: value - usage_before[key] for key, value in asdict(self.client.usage).items()}
+                timing = {"sample_id": sample_id, "session": session.number, "seconds": seconds, "invalid_output": failure is not None, **usage}
+                with (self.runs_dir / "timings.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(timing) + "\n")
             done.add(session.number)
-            progress_path.write_text(json.dumps({"sessions": sorted(done)}))
-            logger.info("%s session %d ingested", sample_id, session.number)
+            progress_path.write_text(json.dumps({"sessions": sorted(done), "invalid_output": sorted(invalid)}))
+            logger.info("%s session %d ingested in %.1fs", sample_id, session.number, seconds)
 
     def stats(self, conversation: Conversation) -> IngestStats:
         memories = self.engines[conversation.sample_id].list_memories(conversation.sample_id, status="active", limit=100_000)
