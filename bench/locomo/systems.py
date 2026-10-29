@@ -248,9 +248,16 @@ class MemoryV2:
         if pending and self.client is None:
             raise RuntimeError(f"{sample_id} is not fully ingested; run `python -m bench.locomo ingest` first")
         engine = self.engines[sample_id]
+        extractor = self.extractors.get(sample_id)
         for session in pending:
             turns = [TurnInput(turn_id=t.index, speaker=t.speaker, text=t.text, ref=t.ref) for t in session.turns]
             engine.ingest_session(sample_id, turns, session_date=session.date_text)
+            if extractor is not None and extractor.last_exchange is not None:
+                # Every prompt and validated output, kept as the teacher dataset for distilling a smaller extractor.
+                messages, output = extractor.last_exchange
+                record = {"sample_id": sample_id, "session": session.number, "messages": messages, "output": output.model_dump()}
+                with (self.runs_dir / "extractions.jsonl").open("a", encoding="utf-8") as handle:
+                    handle.write(json.dumps(record, ensure_ascii=False) + "\n")
             done.add(session.number)
             progress_path.write_text(json.dumps({"sessions": sorted(done)}))
             logger.info("%s session %d ingested", sample_id, session.number)
