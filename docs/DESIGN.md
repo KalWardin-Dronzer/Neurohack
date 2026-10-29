@@ -222,6 +222,17 @@ reference that extracts nothing. The metrics are:
 - invalid replies;
 - seconds per session on the laptop GPU.
 
+The untuned base model is only probed, on the first five sessions of each held-out conversation, and gets no
+recall figures. Without fine-tuning or constrained decoding it does not write the schema. Of its 15 replies,
+one was valid, and that one was an empty list. The rest failed the same way:
+
+- it invents fields, such as a `description`, and leaves out `event_date` and `replaces_previous`;
+- it repeats memories until it reaches the 2,048-token generation limit;
+- the repair request gets the same reply back.
+
+Each failed session therefore costs two full-length generations, more than four minutes on this GPU. A full
+run of all 91 sessions would have taken about seven hours to show the same failure.
+
 The tables are in RESULTS.md.
 
 **Limits.**
