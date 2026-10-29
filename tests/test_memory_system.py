@@ -10,16 +10,13 @@ from app.memory.service import MemoryEngine
 def engine(tmp_path):
     settings = Settings(
         database_path=str(tmp_path / "memory_test.db"),
+        embedding_backend="hashed",
         embedding_dim=128,
         short_term_window=8,
         retrieval_top_k=6,
-        retrieval_min_score=0.0,
         lexical_top_k=8,
         semantic_top_k=8,
-        recency_half_life_turns=200,
-        enable_llm_extractor=False,
-        enable_openai_response=False,
-        openai_model="gpt-4o-mini",
+        llm_cache_path=None,
     )
     instance = MemoryEngine(settings)
     yield instance

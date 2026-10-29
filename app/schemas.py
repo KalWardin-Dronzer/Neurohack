@@ -33,6 +33,8 @@ class MemoryRecord(BaseModel):
     subject: Optional[str] = None
     relation: Optional[str] = None
     object: Optional[str] = None
+    event_date: Optional[str] = None
+    evidence: list[str] = Field(default_factory=list)
     score: Optional[float] = None
 
 

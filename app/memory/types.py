@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 from typing import Optional
 
@@ -12,6 +12,7 @@ class MemoryType(str, Enum):
     CONSTRAINT = "constraint"
     COMMITMENT = "commitment"
     INSTRUCTION = "instruction"
+    EVENT = "event"
 
 
 class MemoryStatus(str, Enum):
@@ -28,10 +29,20 @@ class MemoryCandidate:
     subject: str = "user"
     relation: Optional[str] = None
     object: Optional[str] = None
+    event_date: Optional[str] = None
+    evidence: tuple[str, ...] = ()
 
     @property
     def normalized_value(self) -> str:
         return " ".join(self.value.strip().lower().split())
+
+    @property
+    def is_event(self) -> bool:
+        # Events accumulate; every other type is a slot that a newer value supersedes.
+        return self.memory_type is MemoryType.EVENT
+
+    def search_text(self) -> str:
+        return f"{self.key.replace('_', ' ')}: {self.value}"
 
     def to_content(self) -> str:
         parts = [f"{self.key}: {self.value}"]
@@ -59,6 +70,28 @@ class MemoryMatch:
     relation: Optional[str]
     object: Optional[str]
     score: float
+    event_date: Optional[str] = None
+    evidence: tuple[str, ...] = ()
+    dense_similarity: Optional[float] = None
+    lexical_score: Optional[float] = None
+
+
+@dataclass(slots=True)
+class TurnInput:
+    turn_id: int
+    speaker: str
+    text: str
+    ref: Optional[str] = None
+
+    @property
+    def label(self) -> str:
+        return self.ref or f"T{self.turn_id}"
+
+
+@dataclass(slots=True)
+class ExtractionContext:
+    session_date: Optional[str] = None
+    known_keys: list[str] = field(default_factory=list)
 
 
 @dataclass(slots=True)
