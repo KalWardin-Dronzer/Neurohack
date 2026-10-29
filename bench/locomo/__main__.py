@@ -33,9 +33,11 @@ FLOORS = (0.5, 0.6, 0.7)
 
 @dataclass(frozen=True, slots=True)
 class Models:
-    extraction: str = "gemini-3.5-flash"
-    answer: str = "gemini-3.5-flash-lite"
-    judge: str = "gemini-3.5-flash"
+    # Free-tier choices: gemini-3.5-flash allows 20 requests a day, so the lite models do the work. The answer
+    # model draws on its own daily quota, and the judge is at least as strong as the model it grades.
+    extraction: str = "gemini-3.5-flash-lite"
+    answer: str = "gemini-3.1-flash-lite"
+    judge: str = "gemini-3.5-flash-lite"
 
 
 def _settings():
@@ -308,7 +310,7 @@ def cmd_judge_agreement(_args) -> int:
 
 def main(argv: list[str] | None = None) -> int:
     logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
-    for noisy in ("httpx", "sentence_transformers", "huggingface_hub"):
+    for noisy in ("httpx", "httpx2", "sentence_transformers", "huggingface_hub"):
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
     parser = argparse.ArgumentParser(prog="python -m bench.locomo", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -316,14 +318,14 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("download").set_defaults(func=cmd_download)
     ingest = sub.add_parser("ingest")
     ingest.add_argument("--model", default=Models().extraction)
-    ingest.add_argument("--rpm", type=float, default=8.0)
+    ingest.add_argument("--rpm", type=float, default=12.0)
     ingest.set_defaults(func=cmd_ingest)
     sub.add_parser("retrieval").set_defaults(func=cmd_retrieval)
     qa = sub.add_parser("qa")
     qa.add_argument("--size", type=int, default=200)
     qa.add_argument("--seed", type=int, default=2026)
     qa.add_argument("--answer-rpm", type=float, default=12.0)
-    qa.add_argument("--judge-rpm", type=float, default=8.0)
+    qa.add_argument("--judge-rpm", type=float, default=10.0)
     qa.set_defaults(func=cmd_qa)
     rep = sub.add_parser("report")
     rep.add_argument("--check", action="store_true")
