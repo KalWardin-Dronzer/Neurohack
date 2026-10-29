@@ -1,11 +1,13 @@
 .PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-report \
-	distill-data distill-train distill-serve distill-serve-base bench-distill-student bench-distill-base bench-distill
+	distill-data distill-train distill-export distill-serve distill-serve-base bench-distill-student bench-distill-base bench-distill
 
 # The training venv's interpreter (bin/python on macOS and Linux).
 TRAIN_PY ?= .venv-train/Scripts/python
 STUDENT_URL ?= http://127.0.0.1:8001/v1
 BASE_URL ?= http://127.0.0.1:8002/v1
 TEST_CONVERSATIONS ?= conv-41,conv-44,conv-47
+# A llama.cpp checkout, whose convert_hf_to_gguf.py distill-export runs: make distill-export LLAMA_CPP=path/to/llama.cpp
+LLAMA_CPP ?=
 
 install:
 	python -m pip install -r requirements.txt
@@ -42,6 +44,9 @@ distill-data:
 
 distill-train:
 	$(TRAIN_PY) -m distill.train
+
+distill-export:
+	$(TRAIN_PY) -m distill.export --llama-cpp $(LLAMA_CPP)
 
 distill-serve:
 	$(TRAIN_PY) -m distill.serve --name neurohack-extractor --adapter bench/runs/distill/qwen3.5-0.8b/adapter --port 8001

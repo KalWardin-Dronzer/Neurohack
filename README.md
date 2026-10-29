@@ -44,7 +44,7 @@ The student is `Qwen/Qwen3.5-0.8B` fine-tuned with LoRA on the teacher's extract
 | Updates | One value per key, ignoring who it was about | Facts accumulate; one the model marks as replacing an earlier fact deprecates the most similar value, with lineage |
 | Robustness | One extraction error killed the worker thread | Worker survives errors; a live turn falls back to regex when the LLM is unavailable |
 | Evaluation | 3 scripted probes (now called a smoke test) | LoCoMo: evidence recall on every question and LLM-judged QA, with bootstrap intervals |
-| Running without an API | Not possible | The teacher's extractions train a LoRA student, Qwen3.5-0.8B, served locally on a 4 GB laptop GPU |
+| Running without an API | Not possible | The teacher's extractions train a LoRA student, Qwen3.5-0.8B, served locally (Ollama or transformers) on a 4 GB laptop GPU |
 
 Why each decision was made, and what the benchmark does and does not show:
 [docs/DESIGN.md](docs/DESIGN.md).
@@ -105,11 +105,29 @@ python -m distill prepare                          # split the teacher log by co
 python -m venv .venv-train
 .venv-train\Scripts\python -m pip install -r requirements-train.txt
 .venv-train\Scripts\python -m distill.train        # LoRA fine-tuning; keeps the best epoch
+```
+
+Then serve it in one of two ways, and set `MEMORY_EXTRACTOR=llm` in `.env`. The student is trained only to
+extract, so leave `ENABLE_LLM_RESPONSE` off.
+
+**With Ollama.** `distill.export` merges the adapter into the model, converts it to an 8-bit GGUF with a
+llama.cpp checkout's converter, and registers it as `neurohack-extractor`:
+
+```bash
+.venv-train\Scripts\python -m distill.export --llama-cpp C:\path\to\llama.cpp
+```
+
+Set `LLM_BASE_URL=http://localhost:11434/v1`, `LLM_MODEL=neurohack-extractor` and `LLM_REASONING_EFFORT=none`.
+The last setting matters. Ollama turns on Qwen3.5's thinking mode by default, which changes the prompt the
+student was trained on. Ollama also constrains decoding to the JSON schema.
+
+**With transformers.** This route needs no conversion. It is the server behind the benchmark numbers:
+
+```bash
 .venv-train\Scripts\python -m distill.serve --name neurohack-extractor --adapter bench/runs/distill/qwen3.5-0.8b/adapter
 ```
 
-Then set `LLM_BASE_URL=http://127.0.0.1:8001/v1`, `LLM_MODEL=neurohack-extractor` and `MEMORY_EXTRACTOR=llm`
-in `.env`. The student is trained only to extract, so leave `ENABLE_LLM_RESPONSE` off.
+Set `LLM_BASE_URL=http://127.0.0.1:8001/v1` and `LLM_MODEL=neurohack-extractor`.
 
 To reproduce the comparison, serve one model at a time:
 
@@ -145,7 +163,7 @@ app/
   memory/service.py    engine: live turns, batch ingestion, background worker
 bench/locomo/          dataset loader, systems, retrieval, QA and distillation evaluation, report
   legacy_v1/           the v1.0-hackathon code, frozen as a baseline
-distill/               teacher-data split, LoRA training, a local OpenAI-compatible server
+distill/               teacher-data split, LoRA training, a local OpenAI-compatible server, GGUF export
 docs/DESIGN.md         decisions, protocol and limitations
 docs/hackathon/        the original submission packet and slides
 ```

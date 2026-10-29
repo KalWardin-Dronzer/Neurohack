@@ -188,10 +188,11 @@ examples, it also matched the loss transformers computes itself to within 1e-6 r
 measured before training and after each epoch, and the adapter from the best epoch is kept. The reported run started from committed code, so `training.json` names
 the exact commit.
 
-**Prompt format.** Training and serving render prompts with one function, in `distill/prompt.py`. A check
-compares it with Qwen3.5's own chat template in non-thinking mode, where an empty think block opens the reply.
-It produces exactly the template's text for 271 of the 272 examples. The other one has untrimmed whitespace,
-which the template strips.
+**Prompt format.** Training and `distill.serve` render prompts with one function, in `distill/prompt.py`. A
+check compares it with Qwen3.5's own chat template in non-thinking mode, where an empty think block opens the
+reply. It produces exactly the template's text for 271 of the 272 examples. The other one has untrimmed
+whitespace, which the template strips. Ollama renders that same template, so the GGUF route below sees the
+training prompt too, provided thinking is off.
 
 **Serving.** `distill/serve.py` serves the base model or the student over the OpenAI chat API, so the memory
 service and the benchmark reach it by changing `LLM_BASE_URL`, just as they reach Gemini. Decoding is greedy
@@ -199,10 +200,32 @@ and unconstrained: nothing forces valid JSON. The extractor's own validation, wi
 the teacher, therefore measures whether the model writes the schema by itself. A session whose reply is still
 invalid stores no memories and counts against recall.
 
-**GGUF and Ollama.** Not done yet. Ollama on Windows can import safetensors only through its MLX runtime,
-which is not available there, so it needs a GGUF file. Producing one requires llama.cpp's converter, which was
-not run in this environment. Through Ollama the student would also get grammar-constrained JSON decoding,
-which should rule out schema errors short of the generation limit.
+**GGUF and Ollama.** `distill/export.py` does three things:
+
+1. it merges the adapter into the base weights;
+2. it converts the student and the untuned base model to 8-bit GGUF with llama.cpp's converter (commit
+   `8642541`);
+3. it registers both in Ollama.
+
+The GGUF step is necessary because Ollama on Windows imports safetensors only through its MLX runtime, which
+is not available there.
+
+One trap matters. Ollama 0.40 renders prompts with the chat template stored in the GGUF and ignores a
+Modelfile TEMPLATE. Qwen3.5's template supports thinking, so Ollama turns thinking on by default. The prompt
+then ends in an open think block, two tokens away from the training format, and the student starts writing a
+reasoning section instead of JSON.
+
+Sending `reasoning_effort: "none"` (`LLM_REASONING_EFFORT=none`) restores the training prompt exactly. A check
+confirms this on held-out sessions:
+
+- it compares Ollama's prompt token count with the training tokenizer's;
+- it validates the memories Ollama returns;
+- it uses the default request as a positive control.
+
+Through Ollama, decoding is also constrained to the JSON schema. A diagnostic run on two held-out sessions
+generated 100 to 119 tokens per second, against about 14 with `distill.serve` on the same GPU. llama.cpp runs
+the model with compiled kernels, while transformers fell back to its reference implementation. The benchmark
+tables still come from `distill.serve`; the Ollama route has not been run on the whole held-out set.
 
 **Evaluation.** Four extractors each fill the same v2 store for the held-out conversations:
 
@@ -251,9 +274,9 @@ The tables are in RESULTS.md.
 
 ## Limits and next steps
 
-- **Ollama and constrained decoding.** Convert the student to GGUF and serve it through Ollama. Grammar-
-  constrained JSON should remove invalid replies. Then measure its QA accuracy with the same answer model and
-  judge as the other systems.
+- **Benchmark the Ollama route.** Rerun the held-out comparison through Ollama, which is quantised and
+  schema-constrained. Constrained decoding also makes a full run of the untuned base model affordable. Then
+  measure the student's QA accuracy with the same answer model and judge as the other systems.
 - **Agent access.** Expose `remember`, `recall` and `forget` as an MCP server so any agent can use the store.
 - **More data.** Run LongMemEval for single-user, multi-session histories with knowledge updates.
 - **Dedupe and summaries.** Events are deduplicated only on identical text, so near-duplicates across

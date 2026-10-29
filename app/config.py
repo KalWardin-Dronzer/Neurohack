@@ -35,6 +35,9 @@ class Settings:
     llm_model: str = "gemini-3.5-flash-lite"
     llm_cache_path: str | None = "data/llm_cache.sqlite"
     llm_requests_per_minute: float | None = 10.0
+    # Sent as reasoning_effort when set. "none" keeps a thinking-capable local model, such as the distilled
+    # Qwen3.5 student under Ollama, in the non-thinking format it was trained on.
+    llm_reasoning_effort: str | None = None
     enable_llm_response: bool = False
 
 
@@ -74,5 +77,6 @@ def get_settings() -> Settings:
         llm_model=os.getenv("LLM_MODEL", defaults.llm_model),
         llm_cache_path=os.getenv("LLM_CACHE_PATH", defaults.llm_cache_path) or None,
         llm_requests_per_minute=_env_optional_float("LLM_REQUESTS_PER_MINUTE", defaults.llm_requests_per_minute),
+        llm_reasoning_effort=os.getenv("LLM_REASONING_EFFORT", "").strip() or defaults.llm_reasoning_effort,
         enable_llm_response=_env_bool("ENABLE_LLM_RESPONSE", defaults.enable_llm_response),
     )

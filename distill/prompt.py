@@ -1,8 +1,9 @@
 """The exact text the student is trained on and served with.
 
-Training renders prompts with `render_prompt`, and `distill.serve` renders every request the same way, so the
-served model sees the token sequence it learned from. The format is Qwen3.5's chat template in non-thinking mode
-(an empty think block opens the reply), except that message content is not trimmed.
+Training renders prompts with `render_prompt`, and `distill.serve` renders every request the same way. The format
+is Qwen3.5's own chat template in non-thinking mode (an empty think block opens the reply), except that message
+content is not trimmed. Ollama renders that template from the GGUF, so it produces the same text when a request
+turns thinking off with `reasoning_effort: "none"`.
 """
 from __future__ import annotations
 

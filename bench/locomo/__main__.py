@@ -67,14 +67,16 @@ def _is_local(url: str) -> bool:
     return urlparse(url).hostname in ("localhost", "127.0.0.1", "0.0.0.0", "::1")
 
 
-def _client(settings, model: str, rpm: float, base_url: str | None = None, timeout_s: float = 120.0):
+def _client(settings, model: str, rpm: float, base_url: str | None = None, timeout_s: float = 120.0, reasoning_effort: str | None = None):
     from app.llm.client import LLMClient
 
     url = base_url or settings.llm_base_url
     key = settings.llm_api_key if url == settings.llm_base_url else ""  # the provider key never goes to another endpoint
     if not key and not _is_local(url):
         sys.exit("LLM_API_KEY is empty: put it in .env (see .env.example)")
-    return LLMClient(url, key, model, cache_path=str(CACHE), requests_per_minute=rpm or None, max_retries=8, timeout_s=timeout_s)
+    return LLMClient(
+        url, key, model, cache_path=str(CACHE), requests_per_minute=rpm or None, max_retries=8, timeout_s=timeout_s, reasoning_effort=reasoning_effort
+    )
 
 
 def _git_commit() -> str:
@@ -162,7 +164,7 @@ def cmd_ingest(args) -> int:
             sys.exit(f"unknown conversations: {sorted(unknown)}")
         conversations = [c for c in conversations if c.sample_id in wanted]
     settings = _settings()
-    client = _client(settings, args.model, args.rpm, base_url=args.base_url, timeout_s=args.timeout)
+    client = _client(settings, args.model, args.rpm, base_url=args.base_url, timeout_s=args.timeout, reasoning_effort=args.reasoning_effort)
     embedder = build_embedder(settings)
     v2 = MemoryV2(
         settings,
@@ -461,6 +463,7 @@ def main(argv: list[str] | None = None) -> int:
     ingest.add_argument("--timeout", type=float, default=120.0, help="seconds per request")
     ingest.add_argument("--tolerate-invalid-output", action="store_true", help="record a session whose output stays invalid instead of stopping")
     ingest.add_argument("--first-sessions", type=int, default=None, help="only each conversation's first n sessions, to probe a slow model")
+    ingest.add_argument("--reasoning-effort", default=None, help="sent as reasoning_effort; none keeps a thinking-capable model out of thinking mode")
     ingest.set_defaults(func=cmd_ingest)
     sub.add_parser("retrieval").set_defaults(func=cmd_retrieval)
     qa = sub.add_parser("qa")

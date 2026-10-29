@@ -12,12 +12,13 @@ from pydantic import ValidationError
 from app.config import Settings
 from app.llm.client import LLMClient
 from app.memory.extractor import EXTRACTION_PROMPT, ExtractionOutput
-from app.memory.service import build_embedder
+from app.memory.service import build_embedder, build_llm_client
 from bench.locomo import report
 from bench.locomo.data import Conversation, Session, Turn, parse_session_date
 from bench.locomo.distill_eval import extraction_stats
 from bench.locomo.systems import MemoryV2, QueryEmbeddings
 from distill.dataset import check_teacher_records, split_conversations, to_example
+from distill.export import modelfile
 from distill.prompt import render_prompt
 from distill.serve import make_handler
 from distill.train import Example, encode, lr_at, reply_loss
@@ -75,6 +76,20 @@ def test_prompt_format_is_chatml_with_an_empty_think_block() -> None:
     prompt = render_prompt([{"role": "system", "content": "S"}, {"role": "user", "content": " U "}])
 
     assert prompt == "<|im_start|>system\nS<|im_end|>\n<|im_start|>user\n U <|im_end|>\n<|im_start|>assistant\n<think>\n\n</think>\n\n"
+
+
+def test_ollama_modelfile_decodes_greedily_and_leaves_the_template_to_the_gguf() -> None:
+    recipe = modelfile("student.q8_0.gguf")
+
+    assert recipe.splitlines()[0] == "FROM ./student.q8_0.gguf"
+    assert "TEMPLATE" not in recipe  # Ollama renders the GGUF's own chat template
+    assert {"PARAMETER temperature 0", "PARAMETER repeat_penalty 1", 'PARAMETER stop "<|im_end|>"'} <= set(recipe.splitlines())
+
+
+def test_reasoning_effort_setting_reaches_the_client() -> None:
+    settings = Settings(llm_base_url="http://localhost:11434/v1", llm_cache_path=None, llm_reasoning_effort="none")
+    assert build_llm_client(settings)._reasoning_effort == "none"
+    assert build_llm_client(Settings(llm_base_url="http://localhost:11434/v1", llm_cache_path=None))._reasoning_effort is None
 
 
 class _CharTokenizer:
