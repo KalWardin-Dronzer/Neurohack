@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import logging
 import random
+import threading
 from collections import defaultdict
 from pathlib import Path
 from typing import Callable
@@ -11,6 +12,7 @@ from app.llm.client import LLMClient
 
 from .data import CATEGORY_NAMES, Conversation, Question
 from .judge import JudgeItem, answer_messages, judge_items, token_f1
+from .parallel import parallel_map
 from .retrieval_eval import DEV_CONVERSATION
 from .stats import bootstrap_ci, paired_difference
 from .systems import Retrieved
@@ -48,34 +50,44 @@ def run_qa(
     judge_client: LLMClient,
     records_path: Path,
     k: int = QA_K,
+    workers: int = 1,
 ) -> dict:
     by_id = {conv.sample_id: conv for conv in conversations}
-    records: list[dict] = []
+    # Contexts are built locally and sequentially; only the LLM calls run concurrently.
+    tasks: list[tuple[str, Question, list[dict[str, str]]]] = []
     for name, retrieve in systems.items():
-        for position, question in enumerate(subset, start=1):
+        for question in subset:
             conversation = by_id[question.conversation_id]
-            retrieved = retrieve(conversation, question, k)
             # Retrieval systems return at most k items; full context returns every session and must keep them all.
-            context = retrieved.render() or "(no context retrieved)"
-            reply = answer_client.chat(answer_messages(conversation, context, question), temperature=0.0)
-            records.append(
-                {
-                    "system": name,
-                    "qid": question.qid,
-                    "question": question.text,
-                    "gold": question.answer,
-                    "answer": reply.text.strip(),
-                    "prompt_tokens": reply.prompt_tokens,
-                }
-            )
-            if position % 25 == 0:
-                logger.info("%s: answered %d/%d", name, position, len(subset))
+            context = retrieve(conversation, question, k).render() or "(no context retrieved)"
+            tasks.append((name, question, answer_messages(conversation, context, question)))
+
+    done = [0]
+    progress = threading.Lock()
+
+    def answer(task: tuple[str, Question, list[dict[str, str]]]) -> dict:
+        name, question, messages = task
+        reply = answer_client.chat(messages, temperature=0.0)
+        with progress:
+            done[0] += 1
+            if done[0] % 50 == 0:
+                logger.info("answered %d/%d", done[0], len(tasks))
+        return {
+            "system": name,
+            "qid": question.qid,
+            "question": question.text,
+            "gold": question.answer,
+            "answer": reply.text.strip(),
+            "prompt_tokens": reply.prompt_tokens,
+        }
+
+    records = parallel_map(answer, tasks, workers)
 
     by_qid = {q.qid: q for q in subset}
     for name in systems:
         system_records = [r for r in records if r["system"] == name]
         items = [JudgeItem(id=r["qid"], question=r["question"], gold=r["gold"], answer=r["answer"]) for r in system_records]
-        grades = judge_items(judge_client, items)
+        grades = judge_items(judge_client, items, workers=workers)
         for record in system_records:
             grade = grades[record["qid"]]
             record["label"] = grade.label

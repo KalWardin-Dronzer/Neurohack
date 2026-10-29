@@ -13,6 +13,7 @@ from pydantic import BaseModel
 from app.llm.client import LLMClient
 
 from .data import Conversation, Question
+from .parallel import parallel_map
 
 logger = logging.getLogger(__name__)
 
@@ -55,19 +56,18 @@ def answer_messages(conversation: Conversation, context: str, question: Question
     return [{"role": "system", "content": system}, {"role": "user", "content": user}]
 
 
-def judge_items(client: LLMClient, items: list[JudgeItem], batch_size: int = 10) -> dict[str, Grade]:
+def judge_items(client: LLMClient, items: list[JudgeItem], batch_size: int = 10, workers: int = 1) -> dict[str, Grade]:
     """Grade items in batches; any item a batch drops or duplicates is regraded alone."""
+    batches = [items[start : start + batch_size] for start in range(0, len(items), batch_size)]
     grades: dict[str, Grade] = {}
-    for start in range(0, len(items), batch_size):
-        batch = items[start : start + batch_size]
-        grades.update(_judge_batch(client, batch))
-        missing = [item for item in batch if item.id not in grades]
-        for item in missing:
-            logger.warning("judge skipped %s in a batch; grading it alone", item.id)
-            grades.update(_judge_batch(client, [item]))
-        still_missing = [item.id for item in batch if item.id not in grades]
-        if still_missing:
-            raise RuntimeError(f"judge returned no grade for {still_missing}")
+    for batch_grades in parallel_map(lambda batch: _judge_batch(client, batch), batches, workers):
+        grades.update(batch_grades)
+    for item in [item for item in items if item.id not in grades]:
+        logger.warning("judge skipped %s in a batch; grading it alone", item.id)
+        grades.update(_judge_batch(client, [item]))
+    still_missing = [item.id for item in items if item.id not in grades]
+    if still_missing:
+        raise RuntimeError(f"judge returned no grade for {still_missing}")
     return grades
 
 

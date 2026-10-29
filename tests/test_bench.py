@@ -110,6 +110,23 @@ def test_judge_regrades_items_a_batch_drops() -> None:
     assert judge.batches == [3, 1, 1]
 
 
+def test_parallel_map_keeps_order_and_stops_on_error() -> None:
+    from bench.locomo.parallel import parallel_map
+
+    assert parallel_map(lambda x: x * x, list(range(20)), workers=4) == [x * x for x in range(20)]
+    started: list[int] = []
+
+    def boom(x: int) -> int:
+        started.append(x)
+        if x == 0:
+            raise ValueError("quota")
+        return x
+
+    with pytest.raises(ValueError):
+        parallel_map(boom, list(range(200)), workers=2)
+    assert len(started) < 200
+
+
 def test_report_renders_from_results_without_typed_numbers() -> None:
     estimate = {"mean": 0.5, "lo": 0.4, "hi": 0.6, "n": 10}
     by_k = {k: {"recall": estimate, "hit": estimate, "mean_items": 3.0, "mean_context_tokens": 120.0} for k in ("5", "10", "20")}

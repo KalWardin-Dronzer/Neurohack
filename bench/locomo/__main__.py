@@ -246,7 +246,7 @@ def cmd_qa(args) -> int:
             "v1_as_shipped": v1.retrieve,
             "v2": lambda c, q, k: v2.retrieve(c, q, k, mode="rrf"),
         }
-        result = run_qa(conversations, systems, subset, answer_client, judge_client, QA_RECORDS)
+        result = run_qa(conversations, systems, subset, answer_client, judge_client, QA_RECORDS, workers=args.workers)
     except QuotaExhausted as exc:
         print(f"stopped: {exc}")
         return 2
@@ -326,6 +326,7 @@ def main(argv: list[str] | None = None) -> int:
     qa.add_argument("--seed", type=int, default=2026)
     qa.add_argument("--answer-rpm", type=float, default=12.0)
     qa.add_argument("--judge-rpm", type=float, default=10.0)
+    qa.add_argument("--workers", type=int, default=4, help="concurrent LLM calls; pacing still caps requests per minute")
     qa.set_defaults(func=cmd_qa)
     rep = sub.add_parser("report")
     rep.add_argument("--check", action="store_true")

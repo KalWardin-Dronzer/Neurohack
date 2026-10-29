@@ -177,6 +177,11 @@ class LLMClient:
         self._reasoning_effort = reasoning_effort
         self._json_schema_supported = True
         self.usage = LLMUsage()
+        self._usage_lock = threading.Lock()
+
+    def _record(self, reply: LLMReply) -> None:
+        with self._usage_lock:
+            self.usage.record(reply)
 
     def chat(
         self,
@@ -204,7 +209,7 @@ class LLMClient:
         if self._cache is not None:
             cached = self._cache.get(request_hash)
             if cached is not None:
-                self.usage.record(cached)
+                self._record(cached)
                 return cached
 
         completion = self._send(request)
@@ -217,7 +222,7 @@ class LLMClient:
         )
         if self._cache is not None:
             self._cache.put(request_hash, self.model, reply)
-        self.usage.record(reply)
+        self._record(reply)
         return reply
 
     def chat_json(
