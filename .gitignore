@@ -1,0 +1,14 @@
+__pycache__/
+.pytest_cache/
+.venv/
+venv/
+*.pyc
+*.pyo
+*.pyd
+.env
+data/*.db
+data/*.db-*
+data/*.sqlite
+*.log
+bench/data/
+bench/runs/
