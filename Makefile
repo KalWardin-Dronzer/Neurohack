@@ -1,5 +1,5 @@
 .PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-report \
-	distill-data distill-train distill-serve distill-serve-base bench-distill-ingest bench-distill
+	distill-data distill-train distill-serve distill-serve-base bench-distill-student bench-distill-base bench-distill
 
 # The training venv's interpreter (bin/python on macOS and Linux).
 TRAIN_PY ?= .venv-train/Scripts/python
@@ -49,9 +49,12 @@ distill-serve:
 distill-serve-base:
 	$(TRAIN_PY) -m distill.serve --name neurohack-extractor-base --port 8002
 
-bench-distill-ingest:
+# A 4 GB GPU holds one served model at a time: run distill-serve for the student, or distill-serve-base.
+bench-distill-student:
 	python -m bench.locomo ingest --base-url $(STUDENT_URL) --model neurohack-extractor --rpm 0 --timeout 600 --max-tokens 2048 \
 		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --runs-dir bench/runs/distill/ingest/neurohack-extractor
+
+bench-distill-base:
 	python -m bench.locomo ingest --base-url $(BASE_URL) --model neurohack-extractor-base --rpm 0 --timeout 600 --max-tokens 2048 \
 		--tolerate-invalid-output --conversations $(TEST_CONVERSATIONS) --runs-dir bench/runs/distill/ingest/neurohack-extractor-base
 

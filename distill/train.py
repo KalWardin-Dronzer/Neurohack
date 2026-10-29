@@ -29,7 +29,7 @@ from .dataset import DATA_DIR
 from .prompt import END_OF_TURN, render_prompt
 
 # Every projection in the attention, linear-attention (Gated DeltaNet) and MLP blocks. The per-head decay and
-# gate projections (in_proj_a, in_proj_b) output 16 values each, too few for a rank-16 update.
+# gate projections (in_proj_a, in_proj_b) output only 16 values each, so a rank-16 update would not be low-rank.
 LORA_TARGETS = ("q_proj", "k_proj", "v_proj", "o_proj", "in_proj_qkv", "in_proj_z", "out_proj", "gate_proj", "up_proj", "down_proj")
 
 

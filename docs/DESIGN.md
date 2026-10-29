@@ -79,11 +79,11 @@ conversation keeps working. In strict mode, which the benchmark uses, it raises 
 stops rather than silently mixing in regex extractions, and an exhausted daily quota is always raised.
 
 **Teacher data.** Every benchmark extraction is logged as its prompt plus the validated output, in
-`bench/runs/v2/extractions.jsonl`. That log is the training set for distilling a smaller extractor.
+`bench/runs/v2/extractions.jsonl`. That log is the training set for the distilled extractor described below.
 
 **Provider-agnostic client.** `LLMClient` speaks the OpenAI-compatible chat API, so Gemini, Ollama, vLLM and
-OpenAI all work by changing `LLM_BASE_URL`. That is how a locally served fine-tuned model can replace the
-hosted one later. Every request and reply is cached in SQLite under a hash of the full request, so reruns
+OpenAI all work by changing `LLM_BASE_URL`. That is how the locally served student replaces the hosted
+teacher. Every request and reply is cached in SQLite under a hash of the full request, so reruns
 cost nothing and interrupted runs resume. The client paces its requests, honours retry hints on 429 and 503,
 and raises `QuotaExhausted` on a daily limit.
 
@@ -150,11 +150,97 @@ the questions that cite it. Every table also reports the other nine conversation
 **Judge validation.** `python -m bench.locomo judge-sample` exports 50 judged answers for hand labelling,
 and `judge-agreement` reports agreement and Cohen's kappa against those labels.
 
+## Distilling the extractor
+
+**Why.** Every session costs one call to a hosted model. On the free tier that caps ingestion at a few
+hundred sessions a day, and it sends every conversation to a third party. A small model running next to the
+store removes both limits. The teacher's logged extractions are its training data, so no new labels are
+needed.
+
+**Data.** The 272 logged calls (prompt plus validated output) are first checked against the current prompt
+and schema. They are then split by whole conversation, never by session, so the student is tested on people
+it has not read about. With seed 2026:
+
+- three conversations are held out for testing: conv-41, conv-44 and conv-47, with 91 sessions;
+- conv-48 is used for validation;
+- the other six train (151 sessions), including conv-26, which shaped the prompt.
+
+`bench/runs/distill/data/split.json` records the seed and the hash of every file.
+
+**Student.** `Qwen/Qwen3.5-0.8B` at revision `2fc0636`, licensed Apache 2.0. Its 752M parameters fine-tune in
+bf16 on a 4 GB laptop GPU. Most of its layers are Gated DeltaNet (linear attention), with full attention
+every fourth layer, so long prompts stay cheap. The Qwen3.5 fine-tuning notes advise against 4-bit QLoRA for
+this family, because its quantisation error is unusually high. The base weights therefore stay in bf16 and
+only LoRA adapters train.
+
+**Training.** LoRA (rank 16, alpha 32, dropout 0.05) goes on every attention, linear-attention and MLP
+projection. The per-head decay and gate projections are left out, because they output only 16 values each, so a rank-16
+update to them would not be low-rank. The recipe was fixed before training:
+
+- 3 epochs at learning rate 2e-4, with warmup and cosine decay;
+- 8 sessions per optimizer step;
+- one seed.
+
+The loss covers only the reply tokens. The vocabulary has 248k tokens, so the fp32 logits of a 1,000-token
+reply would take about 1 GB. They are computed in checkpointed chunks of 256 positions instead. A unit test
+checks the chunked loss and its gradient against plain cross-entropy, and on real examples it agreed with the
+transformers loss to within 1e-6. Validation loss is measured before training and after each epoch, and the
+adapter from the best epoch is kept. The reported run started from committed code, so `training.json` names
+the exact commit.
+
+**Prompt format.** Training and serving render prompts with one function, in `distill/prompt.py`. A check
+compares it with Qwen3.5's own chat template in non-thinking mode, where an empty think block opens the reply.
+It produces exactly the template's text for 271 of the 272 examples. The other one has untrimmed whitespace,
+which the template strips.
+
+**Serving.** `distill/serve.py` serves the base model or the student over the OpenAI chat API, so the memory
+service and the benchmark reach it by changing `LLM_BASE_URL`, just as they reach Gemini. Decoding is greedy
+and unconstrained: nothing forces valid JSON. The extractor's own validation, with one repair request as for
+the teacher, therefore measures whether the model writes the schema by itself. A session whose reply is still
+invalid stores no memories and counts against recall.
+
+**GGUF and Ollama.** Not done yet. Ollama on Windows can import safetensors only through its MLX runtime,
+which is not available there, so it needs a GGUF file. Producing one requires llama.cpp's converter, which was
+not run in this environment. Through Ollama the student would also get grammar-constrained JSON decoding,
+which should make invalid replies impossible.
+
+**Evaluation.** Four extractors each fill the same v2 store for the held-out conversations:
+
+- the teacher;
+- the student;
+- the untuned base model, behind the same server and prompt;
+- the regex rules.
+
+Retrieval uses the same RRF settings for all four, so only the extractor differs. Raw-turn RAG is the
+reference that extracts nothing. The metrics are:
+
+- evidence recall@k on every held-out question with evidence;
+- paired bootstrap differences against the student;
+- memories per session;
+- how far the turns each extractor cites agree with the teacher's;
+- the share of invented evidence ids;
+- invalid replies;
+- seconds per session on the laptop GPU.
+
+The tables are in RESULTS.md.
+
+**Limits.**
+
+- There is one split and one seed. The 425 test questions give intervals several points wide.
+- LoCoMo's conversations come from one generator and share a style, so this tests in-distribution
+  generalisation.
+- The student learns the teacher's habits, including what the teacher misses.
+- The student's QA accuracy was not measured, because the answer model's free-tier quota went to the main QA
+  run.
+- The Gated DeltaNet layers ran on transformers' reference PyTorch kernels. flash-linear-attention needs
+  Triton, which has no official Windows build, so training and decoding would be several times faster on
+  Linux.
+
 ## Limits and next steps
 
-- **Distillation.** Fine-tune a 1–3B open model with QLoRA on the teacher's extractions, serve it through
-  Ollama or vLLM using the same client, and report how much of the teacher's recall and accuracy it keeps at
-  zero API cost.
+- **Ollama and constrained decoding.** Convert the student to GGUF and serve it through Ollama. Grammar-
+  constrained JSON should remove invalid replies. Then measure its QA accuracy with the same answer model and
+  judge as the other systems.
 - **Agent access.** Expose `remember`, `recall` and `forget` as an MCP server so any agent can use the store.
 - **More data.** Run LongMemEval for single-user, multi-session histories with knowledge updates.
 - **Dedupe and summaries.** Events are deduplicated only on identical text, so near-duplicates across

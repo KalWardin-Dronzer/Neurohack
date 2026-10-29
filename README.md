@@ -33,6 +33,7 @@ Recall covers all 1,535 questions with annotated evidence; brackets are 95% boot
 | Updates | One value per key, ignoring who it was about | Facts accumulate; one the model marks as replacing an earlier fact deprecates the most similar value, with lineage |
 | Robustness | One extraction error killed the worker thread | Worker survives errors; a live turn falls back to regex when the LLM is unavailable |
 | Evaluation | 3 scripted probes (now called a smoke test) | LoCoMo: evidence recall on every question and LLM-judged QA, with bootstrap intervals |
+| Running without an API | Not possible | The teacher's extractions train a LoRA student, Qwen3.5-0.8B, served locally on a 4 GB laptop GPU |
 
 Why each decision was made, and what the benchmark does and does not show:
 [docs/DESIGN.md](docs/DESIGN.md).
@@ -82,15 +83,45 @@ The default models fit the Gemini free tier, and the protocol (exclusions, subse
 [docs/DESIGN.md](docs/DESIGN.md#benchmark-protocol). To check the LLM judge yourself, run
 `python -m bench.locomo judge-sample`, label the 50 exported answers, then run `judge-agreement`.
 
+## Run the extractor locally
+
+The teacher's logged extractions train a small local model: `Qwen/Qwen3.5-0.8B` with a LoRA adapter. The
+service then calls it like any other endpoint. Training needs a CUDA GPU with 4 GB of memory. Its
+dependencies live in a separate environment, so the service still installs without CUDA.
+
+```bash
+python -m distill prepare                          # split the teacher log by conversation
+python -m venv .venv-train
+.venv-train\Scripts\python -m pip install -r requirements-train.txt
+.venv-train\Scripts\python -m distill.train        # LoRA fine-tuning; keeps the best epoch
+.venv-train\Scripts\python -m distill.serve --name neurohack-extractor --adapter bench/runs/distill/qwen3.5-0.8b/adapter
+```
+
+Then set `LLM_BASE_URL=http://127.0.0.1:8001/v1`, `LLM_MODEL=neurohack-extractor` and `MEMORY_EXTRACTOR=llm`
+in `.env`. The student is trained only to extract, so leave `ENABLE_LLM_RESPONSE` off.
+
+To reproduce the comparison, serve one model at a time:
+
+1. Start `make distill-serve` and run `make bench-distill-student`.
+2. Start `make distill-serve-base` and run `make bench-distill-base`.
+3. Run `make bench-distill`, then `make bench-report`.
+
+The protocol is in [docs/DESIGN.md](docs/DESIGN.md#distilling-the-extractor).
+
 ## Tests
 
 ```bash
 pytest -q
 ```
 
-The tests cover the BM25 direction, RRF arithmetic, vector-model mismatches, supersession, LLM output
-validation, the repair round and fallback, quota handling, evidence-id repair, the bootstrap statistics, and a
-check that the vendored v1 baseline still matches the tag.
+The tests cover:
+
+- retrieval: the BM25 direction, RRF arithmetic, vector-model mismatches and supersession;
+- extraction: LLM output validation, the repair round, the regex fallback and quota handling;
+- the benchmark: evidence-id repair, the bootstrap statistics, and a check that the vendored v1 baseline
+  still matches the tag;
+- distillation: the split, reply-only labels, the chunked loss against plain cross-entropy, the local server
+  and the handling of invalid replies.
 
 ## Layout
 
@@ -101,8 +132,9 @@ app/
   memory/retriever.py  dense + BM25 with Reciprocal Rank Fusion
   memory/store.py      SQLite store, FTS5 index, float32 vectors, supersession
   memory/service.py    engine: live turns, batch ingestion, background worker
-bench/locomo/          dataset loader, systems, retrieval and QA evaluation, report
+bench/locomo/          dataset loader, systems, retrieval, QA and distillation evaluation, report
   legacy_v1/           the v1.0-hackathon code, frozen as a baseline
+distill/               teacher-data split, LoRA training, a local OpenAI-compatible server
 docs/DESIGN.md         decisions, protocol and limitations
 docs/hackathon/        the original submission packet and slides
 ```
