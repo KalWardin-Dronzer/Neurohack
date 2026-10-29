@@ -276,8 +276,8 @@ of all 91 sessions would have taken about seven hours to show the same failure.
 
 Through Ollama, the same model could run on all 91 sessions, because its faster decoding brings a failed
 session down to about half a minute. With the schema constraint each token is valid JSON, but the constraint
-cannot stop the model repeating itself, so 69 of its replies still ran into the limit. That full run gives
-the fine-tuning effect under identical serving, which RESULTS.md reports as a paired difference.
+cannot stop the model repeating itself. In 69 of its 91 sessions, both requests still ran into the limit. That
+full run gives the fine-tuning effect under identical serving, which RESULTS.md reports as a paired difference.
 
 The tables are in RESULTS.md.
 
