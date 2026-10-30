@@ -13,13 +13,14 @@ original submission.
 <!-- RESULTS:START -->
 ## Results on LoCoMo
 
-| System | Evidence recall@10 | Context tokens at k = 10 |
-|---|---|---|
-| Raw-turn RAG (dense top-k over turns) | 58.5% [56.2, 60.8] | 401 |
-| Neurohack v1 as submitted (regex extraction, weighted scores) | 1.5% [1.0, 2.1] | 165 |
-| Neurohack v2 (LLM extraction, RRF retrieval) | 65.7% [63.5, 67.9] | 228 |
+| System | Evidence recall@10 | QA accuracy (LLM judge) | Prompt tokens per question |
+|---|---|---|---|
+| Full context (whole conversation in the prompt) | n/a (reads everything) | 74.0% [68.0, 80.0] | 22,242 |
+| Raw-turn RAG (dense top-k over turns) | 58.5% [56.2, 60.8] | 62.5% [55.5, 69.0] | 584 |
+| Neurohack v1 as submitted (regex extraction, weighted scores) | 1.5% [1.0, 2.1] | 0.5% [0.0, 1.5] | 326 |
+| Neurohack v2 (LLM extraction, RRF retrieval) | 65.7% [63.5, 67.9] | 49.0% [42.0, 56.0] | 448 |
 
-Recall covers all 1,535 questions with annotated evidence; brackets are 95% bootstrap intervals. LLM-judged question answering on a stratified subset is still running within the free-tier quota. Per-category tables, ablations and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
+Recall covers all 1,535 questions with annotated evidence. QA covers a stratified subset of 200 (seed 2026), answered by `gemini-3.1-flash-lite` and graded by `gemini-3.5-flash-lite`. Brackets are 95% bootstrap intervals. Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
 
 ### A distilled extractor that runs on a laptop
 

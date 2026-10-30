@@ -97,6 +97,39 @@ song. With 62 memories left, v2's evidence recall@10 on that conversation was 0.
 RAG. The `replaces_previous` flag described above is the fix. Re-extracted with it, the same conversation
 kept 137 active memories and its recall@10 rose to 0.66. All reported results come from the re-extracted run.
 
+## What question answering showed
+
+The LLM-judged QA run reverses the retrieval ranking. v2 retrieves more of the annotated evidence than raw-turn
+RAG, but it answers fewer questions correctly. Its judge accuracy is 49.0% against 62.5% for raw-turn RAG, a
+paired difference of -13.5 pts [-22.5, -4.5]. The gap is concentrated in single-hop questions, which are 109
+of the 200: 40.4% for v2 against 75.2%. On temporal questions v2 leads, 76.2% against 52.4%.
+
+**Why.** A memory keeps the gist of a turn and often drops the detail a question asks for, yet it still cites
+the turn, so evidence recall counts it as a hit. Two examples:
+
+- "Maria really enjoys upside-down poses in aerial yoga" cites the turn that answers "What does Maria feel
+  when doing upside-down poses?", but the memory lost the answer: "free and light".
+- "Joanna watched and recommends the movie Little Women" lost what the film is about.
+
+A diagnostic run on the same 200 questions measured how often each system's top 10 items contain every word of
+the gold answer:
+
+| Category | v2 | Raw-turn RAG |
+|---|---|---|
+| Single-hop | 44% | 63% |
+| Temporal | 60% | 19% |
+
+Dates resolved at write time are what v2's memories add.
+
+**What this means.**
+
+- Evidence recall measures whether the right source was found, not whether its content reached the answer
+  model. The two diverge when the retrieved item is a summary.
+- The obvious next step follows from the provenance v2 already stores: return each retrieved memory together
+  with the turns it cites, so the answer model gets the detail and the date.
+- Extraction that keeps specifics (feelings, descriptions, titles) would help too, at the cost of more and
+  longer memories.
+
 ## Benchmark protocol
 
 **Dataset.** LoCoMo (Maharana et al., ACL 2024) has 10 conversations, 272 sessions and 5,882 turns, with
@@ -295,6 +328,8 @@ The tables are in RESULTS.md.
 
 ## Limits and next steps
 
+- **Close the QA gap first.** Return each retrieved memory with the turns it cites, and measure judge accuracy
+  again; v2 trails raw-turn RAG on single-hop detail questions (see "What question answering showed").
 - **Constrained decoding without the cost.** Train the student on keys in alphabetical order, or serve it
   through a runtime whose grammar keeps the schema's order. Either way, constrained decoding would then guard
   the format without changing it.

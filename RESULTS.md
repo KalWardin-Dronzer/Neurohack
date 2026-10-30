@@ -50,6 +50,34 @@ Memories whose cosine similarity to the question falls below the floor are never
 
 1,769 active memories from 272 sessions (6.5 per session; 31% events), citing 1.33 evidence turns each on average. Every memory cites at least one valid turn. v1's regex extractor stored 300 memories from the same 5,882 turns.
 
+## Question answering on a stratified subset (n = 200, seed 2026)
+
+Each system's context (top 10 items, or the whole conversation) goes to the same answer model, `gemini-3.1-flash-lite`, and `gemini-3.5-flash-lite` grades each answer against the gold answer as CORRECT or WRONG. Token F1 is the original LoCoMo metric, computed without an LLM.
+
+| System | Judge accuracy | Token F1 | Prompt tokens per question |
+|---|---|---|---|
+| Full context (whole conversation in the prompt) | 74.0% [68.0, 80.0] | 63.5% [58.5, 68.4] | 22,242 |
+| Raw-turn RAG (dense top-k over turns) | 62.5% [55.5, 69.0] | 50.8% [45.3, 56.3] | 584 |
+| Neurohack v1 as submitted (regex extraction, weighted scores) | 0.5% [0.0, 1.5] | 0.4% [0.1, 0.8] | 326 |
+| Neurohack v2 (LLM extraction, RRF retrieval) | 49.0% [42.0, 56.0] | 38.1% [32.6, 43.7] | 448 |
+
+Paired differences in judge accuracy (same questions; an interval that excludes 0 is a real gap):
+
+- v2 minus Full context: -25.0 pts [-33.5, -16.5]
+- v2 minus Raw-turn RAG: -13.5 pts [-22.5, -4.5]
+- v2 minus Neurohack v1 as submitted: +48.5 pts [+41.5, +55.5]
+
+### Judge accuracy by category
+
+| System | multi-hop | temporal | open-domain | single-hop | Held out (excluding conv-26) |
+|---|---|---|---|---|---|
+| Full context (whole conversation in the prompt) | 51.4% [35.1, 67.6] | 59.5% [45.2, 73.8] | 66.7% [41.7, 91.7] | 88.1% [81.7, 93.6] | 72.4% [65.9, 78.9] |
+| Raw-turn RAG (dense top-k over turns) | 35.1% [21.6, 51.4] | 52.4% [38.1, 66.7] | 66.7% [41.7, 91.7] | 75.2% [67.0, 83.5] | 61.6% [54.6, 68.6] |
+| Neurohack v1 as submitted (regex extraction, weighted scores) | 0.0% [0.0, 0.0] | 0.0% [0.0, 0.0] | 0.0% [0.0, 0.0] | 0.9% [0.0, 2.8] | 0.0% [0.0, 0.0] |
+| Neurohack v2 (LLM extraction, RRF retrieval) | 40.5% [24.3, 56.8] | 76.2% [61.9, 88.1] | 58.3% [33.3, 83.3] | 40.4% [31.2, 49.5] | 49.7% [42.7, 57.3] |
+
+Subset questions per category: multi-hop 37, temporal 42, open-domain 12, single-hop 109.
+
 ## Distilled local extractor
 
 `Qwen/Qwen3.5-0.8B` (revision `2fc0636`) was fine-tuned with LoRA on the teacher's extractions from 151 sessions of 6 conversations, with conv-48 for validation. The table covers the held-out conversations conv-41, conv-44, conv-47: 91 sessions and 425 questions with evidence, which no model was tuned on. Every row stores memories in the same v2 engine and retrieves them with the same RRF settings; only the extractor differs. The local models ran on an NVIDIA GeForce RTX 3050 Laptop GPU through `distill.serve` (transformers, bf16, greedy decoding, no output constraints) or, exported, through Ollama 0.40.13 (a Q8_0 GGUF from llama.cpp's converter, greedy decoding, thinking off; in rows marked constrained, Ollama also constrains decoding to the JSON schema).
