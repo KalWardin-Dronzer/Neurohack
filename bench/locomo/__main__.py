@@ -456,8 +456,21 @@ def cmd_report(args) -> int:
 
 
 def cmd_judge_sample(args) -> int:
+    """An equal share of judged answers from each named system, in random order.
+
+    v1 is left out by default: nearly all its answers are "not mentioned", which any judge grades correctly, so
+    sampling it would inflate agreement without testing the judge.
+    """
     records = [json.loads(line) for line in QA_RECORDS.read_text(encoding="utf-8").splitlines() if line.strip()]
-    sample = random.Random(args.seed).sample(records, min(args.n, len(records)))
+    systems = args.systems.split(",")
+    rng = random.Random(args.seed)
+    sample = []
+    for i, system in enumerate(systems):
+        pool = [record for record in records if record["system"] == system]
+        if not pool:
+            sys.exit(f"no judged answers for {system}")
+        sample += rng.sample(pool, min(args.n // len(systems) + (i < args.n % len(systems)), len(pool)))
+    rng.shuffle(sample)
     JUDGE_SAMPLE.parent.mkdir(parents=True, exist_ok=True)
     with JUDGE_SAMPLE.open("w", encoding="utf-8", newline="") as handle:
         writer = csv.writer(handle)
@@ -527,6 +540,7 @@ def main(argv: list[str] | None = None) -> int:
     sample = sub.add_parser("judge-sample")
     sample.add_argument("--n", type=int, default=50)
     sample.add_argument("--seed", type=int, default=7)
+    sample.add_argument("--systems", default="full_context,turn_rag,v2", help="comma-separated; the sample is split equally")
     sample.set_defaults(func=cmd_judge_sample)
     sub.add_parser("judge-agreement").set_defaults(func=cmd_judge_agreement)
 

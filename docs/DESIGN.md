@@ -181,7 +181,9 @@ conversations, that bootstrap would be too wide to be informative.
 the questions that cite it. Every table also reports the other nine conversations as a held-out view.
 
 **Judge validation.** `python -m bench.locomo judge-sample` exports 50 judged answers for hand labelling,
-and `judge-agreement` reports agreement and Cohen's kappa against those labels.
+split equally across full context, raw-turn RAG and v2, in random order. v1 is left out because nearly all its
+answers are "not mentioned", which any judge grades correctly, so including it would inflate agreement without
+testing the judge. `judge-agreement` reports agreement and Cohen's kappa against the labels.
 
 ## Distilling the extractor
 
