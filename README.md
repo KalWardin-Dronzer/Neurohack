@@ -19,6 +19,8 @@ original submission.
 | Raw-turn RAG (dense top-k over turns) | 58.5% [56.2, 60.8] | 62.5% [55.5, 69.0] | 584 |
 | Neurohack v1 as submitted (regex extraction, weighted scores) | 1.5% [1.0, 2.1] | 0.5% [0.0, 1.5] | 326 |
 | Neurohack v2 (LLM extraction, RRF retrieval) | 65.7% [63.5, 67.9] | 49.0% [42.0, 56.0] | 448 |
+| v2 + cited turns (each memory with the turns it cites) | as v2 (same memories) | 59.5% [52.5, 66.0] | 1,163 |
+| v2 hybrid (10 memories + 5 raw turns) | n/a (mixed items) | 72.0% [66.0, 78.0] | 673 |
 
 Recall covers all 1,535 questions with annotated evidence. QA covers a stratified subset of 200 (seed 2026), answered by `gemini-3.1-flash-lite` and graded by `gemini-3.5-flash-lite`. Brackets are 95% bootstrap intervals. Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
 

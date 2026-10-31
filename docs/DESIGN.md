@@ -125,10 +125,30 @@ Dates resolved at write time are what v2's memories add.
 
 - Evidence recall measures whether the right source was found, not whether its content reached the answer
   model. The two diverge when the retrieved item is a summary.
-- The obvious next step follows from the provenance v2 already stores: return each retrieved memory together
-  with the turns it cites, so the answer model gets the detail and the date.
+- The fix is to put the detail back next to the memory. Two ways to do it were measured; see below.
 - Extraction that keeps specifics (feelings, descriptions, titles) would help too, at the cost of more and
   longer memories.
+
+**The fix, measured.** Two ways of giving the answer model the detail joined the QA run. Both were picked
+before any QA call, with the coverage diagnostic above:
+
+| System | Judge accuracy | Prompt tokens |
+|---|---|---|
+| Full context | 74.0% [68.0, 80.0] | 22,242 |
+| v2 hybrid: top 10 memories plus raw-turn RAG's top 5 turns | 72.0% [66.0, 78.0] | 673 |
+| Raw-turn RAG | 62.5% [55.5, 69.0] | 584 |
+| v2 + cited turns: each memory with the turns it cites | 59.5% [52.5, 66.0] | 1,163 |
+| v2 | 49.0% [42.0, 56.0] | 448 |
+
+- The hybrid beats raw-turn RAG by +9.5 pts [+3.0, +16.0], paired on the same questions.
+  - It closes the single-hop gap: 75.2% for both.
+  - It keeps most of v2's temporal lead, +19.0 pts [+4.8, +33.3].
+  - It leads on multi-hop questions by +29.7 pts [+16.2, +43.2].
+  - It scores 2 points below full context, which uses 33 times the prompt.
+- Quoting each memory's cited turns helps less: +10.5 pts over v2 [+4.5, +16.5], with 1.7 times the
+  hybrid's prompt.
+- Both variants were chosen on these 200 questions, so these are not out-of-sample estimates. The hybrid also
+  exists only in the benchmark; the service still returns memories alone.
 
 ## Benchmark protocol
 
@@ -330,8 +350,9 @@ The tables are in RESULTS.md.
 
 ## Limits and next steps
 
-- **Close the QA gap first.** Return each retrieved memory with the turns it cites, and measure judge accuracy
-  again; v2 trails raw-turn RAG on single-hop detail questions (see "What question answering showed").
+- **Confirm the hybrid out of sample, then ship it.** It was chosen on the 200 QA questions, so re-run it
+  against raw-turn RAG on a fresh stratified subset before treating +9.5 pts as the effect size. Then make it
+  the service's retrieval mode; today only the benchmark has it (see "What question answering showed").
 - **Constrained decoding without the cost.** Train the student on keys in alphabetical order, or serve it
   through a runtime whose grammar keeps the schema's order. Either way, constrained decoding would then guard
   the format without changing it.

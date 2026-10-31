@@ -60,12 +60,24 @@ Each system's context (top 10 items, or the whole conversation) goes to the same
 | Raw-turn RAG (dense top-k over turns) | 62.5% [55.5, 69.0] | 50.8% [45.3, 56.3] | 584 |
 | Neurohack v1 as submitted (regex extraction, weighted scores) | 0.5% [0.0, 1.5] | 0.4% [0.1, 0.8] | 326 |
 | Neurohack v2 (LLM extraction, RRF retrieval) | 49.0% [42.0, 56.0] | 38.1% [32.6, 43.7] | 448 |
+| v2 + cited turns (each memory with the turns it cites) | 59.5% [52.5, 66.0] | 47.8% [42.1, 53.3] | 1,163 |
+| v2 hybrid (10 memories + 5 raw turns) | 72.0% [66.0, 78.0] | 55.3% [49.9, 60.9] | 673 |
 
 Paired differences in judge accuracy (same questions; an interval that excludes 0 is a real gap):
 
-- v2 minus Full context: -25.0 pts [-33.5, -16.5]
-- v2 minus Raw-turn RAG: -13.5 pts [-22.5, -4.5]
-- v2 minus Neurohack v1 as submitted: +48.5 pts [+41.5, +55.5]
+- Neurohack v2 minus Full context: -25.0 pts [-33.5, -16.5]
+- Neurohack v2 minus Raw-turn RAG: -13.5 pts [-22.5, -4.5]
+- Neurohack v2 minus Neurohack v1 as submitted: +48.5 pts [+41.5, +55.5]
+- v2 + cited turns minus Neurohack v2: +10.5 pts [+4.5, +16.5]
+- v2 hybrid minus Raw-turn RAG: +9.5 pts [+3.0, +16.0]
+- v2 hybrid minus Neurohack v2: +23.0 pts [+16.0, +30.5]
+
+Paired differences by category:
+
+| Pair | multi-hop | temporal | open-domain | single-hop |
+|---|---|---|---|---|
+| Neurohack v2 minus Raw-turn RAG | +5.4 pts [-10.8, +18.9] | +23.8 pts [+7.1, +40.5] | -8.3 pts [-41.7, +25.0] | -34.9 pts [-46.8, -22.9] |
+| v2 hybrid minus Raw-turn RAG | +29.7 pts [+16.2, +43.2] | +19.0 pts [+4.8, +33.3] | +0.0 pts [-25.0, +25.0] | +0.0 pts [-8.3, +8.3] |
 
 ### Judge accuracy by category
 
@@ -75,6 +87,8 @@ Paired differences in judge accuracy (same questions; an interval that excludes 
 | Raw-turn RAG (dense top-k over turns) | 35.1% [21.6, 51.4] | 52.4% [38.1, 66.7] | 66.7% [41.7, 91.7] | 75.2% [67.0, 83.5] | 61.6% [54.6, 68.6] |
 | Neurohack v1 as submitted (regex extraction, weighted scores) | 0.0% [0.0, 0.0] | 0.0% [0.0, 0.0] | 0.0% [0.0, 0.0] | 0.9% [0.0, 2.8] | 0.0% [0.0, 0.0] |
 | Neurohack v2 (LLM extraction, RRF retrieval) | 40.5% [24.3, 56.8] | 76.2% [61.9, 88.1] | 58.3% [33.3, 83.3] | 40.4% [31.2, 49.5] | 49.7% [42.7, 57.3] |
+| v2 + cited turns (each memory with the turns it cites) | 48.6% [32.4, 64.9] | 73.8% [59.5, 85.7] | 58.3% [33.3, 83.3] | 57.8% [48.6, 67.0] | 59.5% [52.4, 66.5] |
+| v2 hybrid (10 memories + 5 raw turns) | 64.9% [48.6, 78.4] | 71.4% [57.1, 83.3] | 66.7% [41.7, 91.7] | 75.2% [67.0, 83.5] | 73.0% [66.5, 79.5] |
 
 Subset questions per category: multi-hop 37, temporal 42, open-domain 12, single-hop 109.
 
