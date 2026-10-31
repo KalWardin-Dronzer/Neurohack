@@ -403,6 +403,13 @@ def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict
         "Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and "
         "[docs/DESIGN.md](docs/DESIGN.md).",
     ]
+    if {"v2_turns", "v2_hybrid"} & set(qa["summary"]):
+        lines += [
+            "",
+            "The two v2 variants were chosen on these same questions, so their scores are not out-of-sample "
+            "estimates; [docs/DESIGN.md](docs/DESIGN.md#what-question-answering-showed) explains how, and why "
+            "a confirmation on fresh questions comes next.",
+        ]
     return "\n".join(lines)
 
 

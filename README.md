@@ -24,6 +24,8 @@ original submission.
 
 Recall covers all 1,535 questions with annotated evidence. QA covers a stratified subset of 200 (seed 2026), answered by `gemini-3.1-flash-lite` and graded by `gemini-3.5-flash-lite`. Brackets are 95% bootstrap intervals. Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
 
+The two v2 variants were chosen on these same questions, so their scores are not out-of-sample estimates; [docs/DESIGN.md](docs/DESIGN.md#what-question-answering-showed) explains how, and why a confirmation on fresh questions comes next.
+
 ### A distilled extractor that runs on a laptop
 
 | Extractor | Evidence recall@10 on held-out conversations | Context tokens at k = 10 | Runs on |
