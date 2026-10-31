@@ -281,7 +281,10 @@ def cmd_qa(args) -> int:
     path, conversations, repairs = _load()
     settings = _settings()
     models = Models()
-    subset = stratified_subset(data.evaluable_questions(conversations), args.size, args.seed)
+    excluded = frozenset()
+    if args.exclude_subset_of:
+        excluded = frozenset(json.loads(args.exclude_subset_of.read_text(encoding="utf-8"))["subset"]["qids"])
+    subset = stratified_subset(data.evaluable_questions(conversations), args.size, args.seed, exclude=excluded)
     queries, turn_rag, v1, v2 = _systems(settings)
     answer_client = _client(settings, models.answer, args.answer_rpm)
     judge_client = _client(settings, models.judge, args.judge_rpm)
@@ -299,7 +302,14 @@ def cmd_qa(args) -> int:
             "v2_turns": lambda c, q, k: v2.retrieve(c, q, k, mode="rrf", with_turns=True),
             "v2_hybrid": MemoryPlusTurns(v2, turn_rag).retrieve,
         }
-        result = run_qa(conversations, systems, subset, answer_client, judge_client, QA_RECORDS, workers=args.workers)
+        if args.systems:
+            wanted = args.systems.split(",")
+            unknown = sorted(set(wanted) - set(systems))
+            if unknown:
+                print(f"unknown systems: {', '.join(unknown)}; choose from {', '.join(systems)}")
+                return 1
+            systems = {name: systems[name] for name in wanted}
+        result = run_qa(conversations, systems, subset, answer_client, judge_client, args.records, workers=args.workers)
     except QuotaExhausted as exc:
         print(f"stopped: {exc}")
         return 2
@@ -307,7 +317,7 @@ def cmd_qa(args) -> int:
         v2.close()
 
     _write_json(
-        report.QA_PATH,
+        args.out,
         {
             "dataset": _dataset_meta(conversations, repairs, path),
             "config": _config(settings, models),
@@ -318,6 +328,7 @@ def cmd_qa(args) -> int:
             "subset": {
                 "size": len(subset),
                 "seed": args.seed,
+                "excluded_from": str(args.exclude_subset_of) if args.exclude_subset_of else None,
                 "qids": [q.qid for q in subset],
                 "category_counts": {data.CATEGORY_NAMES[c]: n for c, n in sorted(Counter(q.category for q in subset).items())},
             },
@@ -530,6 +541,11 @@ def main(argv: list[str] | None = None) -> int:
     qa.add_argument("--answer-rpm", type=float, default=12.0)
     qa.add_argument("--judge-rpm", type=float, default=10.0)
     qa.add_argument("--workers", type=int, default=4, help="concurrent LLM calls; pacing still caps requests per minute")
+    qa.add_argument("--systems", default=None, help="comma-separated subset of the QA systems (default: all)")
+    qa.add_argument("--exclude-subset-of", type=Path, default=None,
+                    help="a QA results file whose questions the new subset must not reuse")
+    qa.add_argument("--out", type=Path, default=report.QA_PATH, help="where to write the results JSON")
+    qa.add_argument("--records", type=Path, default=QA_RECORDS, help="where to write per-question records")
     qa.set_defaults(func=cmd_qa)
     from distill.config import BASE_NAME, STUDENT_NAME
 

@@ -150,6 +150,11 @@ before any QA call, with the coverage diagnostic above:
 - Both variants were chosen on these 200 questions, so these are not out-of-sample estimates. The hybrid also
   exists only in the benchmark; the service still returns memories alone.
 
+**Confirmation, declared before it ran.** `make bench-qa-confirm` asks 200 fresh questions (stratified, seed
+2027, none from the subset above) of raw-turn RAG and the hybrid only, with the same answer model, judge and k.
+The hybrid counts as confirmed if the 95% interval of its paired difference against raw-turn RAG lies above
+zero. The result is reported either way.
+
 ## Benchmark protocol
 
 **Dataset.** LoCoMo (Maharana et al., ACL 2024) has 10 conversations, 272 sessions and 5,882 turns, with

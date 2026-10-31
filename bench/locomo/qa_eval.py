@@ -37,8 +37,14 @@ PAIRS_BY_CATEGORY = (("v2", "turn_rag"), ("v2_hybrid", "turn_rag"))
 RetrieveFn = Callable[[Conversation, Question, int], Retrieved]
 
 
-def stratified_subset(questions: list[Question], size: int, seed: int) -> list[Question]:
-    """Proportional allocation by category (largest remainder), then a seeded sample within each category."""
+def stratified_subset(questions: list[Question], size: int, seed: int,
+                      exclude: frozenset[str] = frozenset()) -> list[Question]:
+    """Proportional allocation by category (largest remainder), then a seeded sample within each category.
+
+    `exclude` drops questions before sampling, so a confirmation subset never reuses the questions a system
+    was chosen on.
+    """
+    questions = [q for q in questions if q.qid not in exclude]
     by_category: dict[int, list[Question]] = defaultdict(list)
     for question in sorted(questions, key=lambda q: q.qid):
         by_category[question.category].append(question)

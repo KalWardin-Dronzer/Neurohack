@@ -82,6 +82,17 @@ def test_stratified_subset_is_proportional_and_deterministic() -> None:
     assert [q.qid for q in stratified_subset(questions, 100, seed=4)] != [q.qid for q in first]
 
 
+def test_confirmation_subset_never_reuses_excluded_questions() -> None:
+    questions = [Question(f"c:q{i}", "c", "?", "a", 1 + (i % 10 >= 6) + (i % 10 >= 9), ()) for i in range(1000)]
+    original = stratified_subset(questions, 100, seed=3)
+    fresh = stratified_subset(questions, 100, seed=4, exclude=frozenset(q.qid for q in original))
+
+    assert not {q.qid for q in fresh} & {q.qid for q in original}
+    assert Counter(q.category for q in fresh) == {1: 60, 2: 30, 3: 10}
+    # Excluding nothing leaves the default subset unchanged.
+    assert [q.qid for q in stratified_subset(questions, 100, seed=3, exclude=frozenset())] == [q.qid for q in original]
+
+
 def test_token_f1_matches_squad_normalisation() -> None:
     assert token_f1("The Pride parade!", "pride parade") == 1.0
     assert token_f1("7 May 2023", "May 7, 2023") == 1.0

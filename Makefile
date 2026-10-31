@@ -1,4 +1,4 @@
-.PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-report \
+.PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-qa-confirm bench-report \
 	distill-data distill-train distill-export distill-serve distill-serve-base bench-distill-student bench-distill-base \
 	bench-distill-ollama bench-distill
 
@@ -39,6 +39,13 @@ bench-retrieval:
 
 bench-qa:
 	python -m bench.locomo qa
+
+# Out-of-sample check of the hybrid, declared in docs/DESIGN.md before it ran: 200 fresh questions that
+# exclude the original subset, raw-turn RAG against the hybrid only. Cached and resumable across quota resets.
+bench-qa-confirm:
+	python -m bench.locomo qa --seed 2027 --systems turn_rag,v2_hybrid \
+		--exclude-subset-of bench/results/locomo_qa.json \
+		--out bench/results/locomo_qa_confirm.json --records bench/runs/qa_confirm_records.jsonl
 
 bench-report:
 	python -m bench.locomo report
