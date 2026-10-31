@@ -191,3 +191,101 @@ def test_vendored_v1_matches_the_hackathon_tag() -> None:
         copy = (ROOT / vendored).read_text(encoding="utf-8")
         original = original.replace("from app.config import Settings", "from .config import Settings")
         assert copy.replace("\r\n", "\n") == original.replace("\r\n", "\n"), vendored
+
+
+def _memory_store(tmp_path):
+    """A v2 store over two short sessions, where two memories of session 1 cite the same turn."""
+    from app.config import Settings
+    from app.memory.service import build_embedder
+    from app.memory.types import MemoryCandidate, MemoryType
+    from bench.locomo.data import Conversation, Session, Turn
+    from bench.locomo.systems import MemoryV2, QueryEmbeddings
+
+    class Cites:
+        def extract_turns(self, turns, context):
+            first = turns[0]
+            return [
+                MemoryCandidate(MemoryType.FACT, "pet", f"{first.speaker} adopted a cat.", 0.9, subject=first.speaker, evidence=(first.label,)),
+                MemoryCandidate(MemoryType.FACT, "pet_name", f"{first.speaker}'s cat has a name.", 0.9, subject=first.speaker, evidence=(first.label,)),
+            ]
+
+    date = parse_session_date("1:56 pm on 8 May, 2023")
+    sessions = tuple(
+        Session(n, "1:56 pm on 8 May, 2023", date, (Turn(f"D{n}:1", "A", f"I adopted a cat named Tom {n}", n, 2 * n - 1), Turn(f"D{n}:2", "B", "Nice", n, 2 * n)))
+        for n in (1, 2)
+    )
+    conversation = Conversation("c", "A", "B", sessions, ())
+    settings = Settings(embedding_backend="hashed", database_path=":memory:")
+    embedder = build_embedder(settings)
+    queries = QueryEmbeddings(embedder)
+    store = MemoryV2(settings, embedder, queries, None, tmp_path, extractor_factory=Cites)
+    store.prepare(conversation)
+    return store, conversation, embedder, queries
+
+
+def test_cited_turns_are_quoted_once_without_changing_the_memories(tmp_path) -> None:
+    store, conversation, _, _ = _memory_store(tmp_path)
+    question = Question("c:q0", "c", "What is the cat called?", "Tom", 4, ("D1:1",))
+    try:
+        plain = store.retrieve(conversation, question, 10)
+        quoted = store.retrieve(conversation, question, 10, with_turns=True)
+    finally:
+        store.close()
+
+    assert [item.refs for item in quoted.items] == [item.refs for item in plain.items]
+    text = quoted.render()
+    assert text.count("> A: I adopted a cat named Tom 1") == 1 and text.count("> A: I adopted a cat named Tom 2") == 1
+    assert "Tom" not in plain.render()
+
+
+def test_hybrid_adds_raw_turns_to_the_memories(tmp_path) -> None:
+    from bench.locomo.systems import MemoryPlusTurns, TurnRAG
+
+    store, conversation, embedder, queries = _memory_store(tmp_path)
+    turns = TurnRAG(embedder, queries)
+    turns.prepare(conversation)
+    question = Question("c:q0", "c", "What is the cat called?", "Tom", 4, ("D1:1",))
+    try:
+        hybrid = MemoryPlusTurns(store, turns, memories=2, raw_turns=1).retrieve(conversation, question, 10)
+    finally:
+        store.close()
+
+    assert len(hybrid.items) == 3
+    assert sum(item.text.startswith("- ") for item in hybrid.items) == 2  # memories, then one raw turn
+
+
+def test_paired_differences_follow_the_declared_pairs_and_categories() -> None:
+    from bench.locomo.qa_eval import paired_differences
+
+    subset = [Question(f"c:q{i}", "c", "?", "a", 2 if i < 2 else 4, ()) for i in range(4)]
+    correct = {"v2": [1, 1, 0, 0], "turn_rag": [0, 0, 1, 1], "v2_hybrid": [1, 1, 1, 1]}
+    records = [{"system": name, "qid": f"c:q{i}", "correct": float(value)} for name, values in correct.items() for i, value in enumerate(values)]
+
+    overall, by_category = paired_differences(records, subset, list(correct))
+
+    assert set(overall) == {"v2_minus_turn_rag", "v2_hybrid_minus_turn_rag", "v2_hybrid_minus_v2"}
+    assert overall["v2_minus_turn_rag"]["mean"] == pytest.approx(0.0)
+    assert list(by_category["v2_minus_turn_rag"]) == ["temporal", "single-hop"]
+    assert by_category["v2_minus_turn_rag"]["temporal"]["mean"] == pytest.approx(1.0)
+    assert by_category["v2_hybrid_minus_turn_rag"]["single-hop"]["mean"] == pytest.approx(0.0)
+
+
+def test_qa_section_names_both_sides_of_each_pair_and_breaks_pairs_down_by_category() -> None:
+    estimate = {"mean": 0.5, "lo": 0.4, "hi": 0.6, "n": 10}
+    by_category = {"temporal": estimate, "single-hop": estimate}
+    summary = {
+        name: {"accuracy": estimate, "f1": estimate, "mean_prompt_tokens": 100.0, "accuracy_by_category": by_category, "accuracy_held_out": estimate}
+        for name in ("turn_rag", "v2", "v2_hybrid")
+    }
+    qa = {
+        "subset": {"size": 10, "seed": 1, "category_counts": {"temporal": 4, "single-hop": 6}},
+        "summary": summary,
+        "k": 10,
+        "models": {"answer": "a", "judge": "j"},
+        "dev_conversation": "conv-26",
+        "paired_accuracy_differences": {"v2_hybrid_minus_turn_rag": {"mean": 0.1, "lo": -0.05, "hi": 0.2, "n": 10}},
+        "paired_accuracy_differences_by_category": {"v2_hybrid_minus_turn_rag": {"temporal": estimate, "single-hop": estimate}},
+    }
+    text = "\n".join(report._qa_section(qa))
+    assert "- v2 hybrid minus Raw-turn RAG: +10.0 pts [-5.0, +20.0]" in text
+    assert "| v2 hybrid minus Raw-turn RAG | +50.0 pts [+40.0, +60.0] | +50.0 pts [+40.0, +60.0] |" in text

@@ -275,7 +275,7 @@ def cmd_qa(args) -> int:
 
     from .qa_eval import QA_K, run_qa, stratified_subset
     from .retrieval_eval import DEV_CONVERSATION
-    from .systems import FullContext
+    from .systems import FullContext, MemoryPlusTurns
 
     commit = _git_commit()  # the code that produces the results, recorded before anything can change
     path, conversations, repairs = _load()
@@ -295,6 +295,9 @@ def cmd_qa(args) -> int:
             "turn_rag": turn_rag.retrieve,
             "v1_as_shipped": v1.retrieve,
             "v2": lambda c, q, k: v2.retrieve(c, q, k, mode="rrf"),
+            # Two fixes for memories that drop details: quote the turns each memory cites, or add raw turns.
+            "v2_turns": lambda c, q, k: v2.retrieve(c, q, k, mode="rrf", with_turns=True),
+            "v2_hybrid": MemoryPlusTurns(v2, turn_rag).retrieve,
         }
         result = run_qa(conversations, systems, subset, answer_client, judge_client, QA_RECORDS, workers=args.workers)
     except QuotaExhausted as exc:

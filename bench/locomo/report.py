@@ -20,6 +20,8 @@ LABELS = {
     "v2_dense": "v2 with dense retrieval only",
     "v2_lexical": "v2 with BM25 only",
     "v2_rrf_recency": "v2 with RRF plus a recency ranking",
+    "v2_turns": "v2 + cited turns (each memory with the turns it cites)",
+    "v2_hybrid": "v2 hybrid (10 memories + 5 raw turns)",
 }
 MAIN_RETRIEVAL = ("turn_rag", "v1_as_shipped", "v2_rrf")
 ABLATIONS = ("v2_rrf", "v2_dense", "v2_lexical", "v2_rrf_recency")
@@ -132,12 +134,23 @@ def _qa_section(data: dict) -> list[str]:
     for name, result in summary.items():
         lines.append(f"| {LABELS[name]} | {pct(result['accuracy'])} | {pct(result['f1'])} | {result['mean_prompt_tokens']:,.0f} |")
 
+    def short(name: str) -> str:
+        return LABELS[name].split(" (")[0]
+
     lines += ["", "Paired differences in judge accuracy (same questions; an interval that excludes 0 is a real gap):", ""]
     for key, estimate in data["paired_accuracy_differences"].items():
-        other = key.split("_minus_", 1)[1]
-        lines.append(f"- v2 minus {LABELS[other].split(' (')[0]}: {signed_pct(estimate)}")
+        a, b = key.split("_minus_", 1)
+        lines.append(f"- {short(a)} minus {short(b)}: {signed_pct(estimate)}")
 
     categories = list(next(iter(summary.values()))["accuracy_by_category"])
+    by_category = data.get("paired_accuracy_differences_by_category", {})
+    if by_category:
+        lines += ["", "Paired differences by category:", ""]
+        lines.append("| Pair | " + " | ".join(categories) + " |")
+        lines.append("|---|" + "---|" * len(categories))
+        for key, estimates in by_category.items():
+            a, b = key.split("_minus_", 1)
+            lines.append(f"| {short(a)} minus {short(b)} | " + " | ".join(signed_pct(estimates[c]) for c in categories) + " |")
     lines += ["", "### Judge accuracy by category", ""]
     lines.append("| System | " + " | ".join(categories) + f" | Held out (excluding {data['dev_conversation']}) |")
     lines.append("|---|" + "---|" * (len(categories) + 1))
@@ -376,9 +389,10 @@ def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict
         "| System | Evidence recall@10 | QA accuracy (LLM judge) | Prompt tokens per question |",
         "|---|---|---|---|",
     ]
-    for name in ("full_context", "turn_rag", "v1_as_shipped", "v2"):
+    no_recall = {"full_context": "n/a (reads everything)", "v2_turns": "as v2 (same memories)", "v2_hybrid": "n/a (mixed items)"}
+    for name in (n for n in ("full_context", "turn_rag", "v1_as_shipped", "v2", "v2_turns", "v2_hybrid") if n in qa["summary"]):
         recall = retrieval["systems"].get("v2_rrf" if name == "v2" else name)
-        recall_cell = pct(recall["by_k"]["10"]["recall"]) if recall else "n/a (reads everything)"
+        recall_cell = pct(recall["by_k"]["10"]["recall"]) if recall else no_recall[name]
         answer = qa["summary"][name]
         lines.append(f"| {LABELS[name]} | {recall_cell} | {pct(answer['accuracy'])} | {answer['mean_prompt_tokens']:,.0f} |")
     lines += [

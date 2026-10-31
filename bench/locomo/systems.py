@@ -318,25 +318,51 @@ class MemoryV2:
         mode: str = "rrf",
         use_recency: bool = False,
         floor: float | None = None,
+        with_turns: bool = False,
     ) -> Retrieved:
+        """The top k memories. `with_turns` also quotes the turns each memory cites, each turn once, so the answer
+        model gets details a memory may have dropped; the items and their citations are unchanged."""
         retriever = self.retriever(conversation.sample_id, mode, use_recency, floor)
         self.embedder.embed_query(question.text)  # warm the shared cache so ranking time excludes embedding
         turns_by_index = {turn.index: turn for turn in conversation.turns}
+        turns_by_ref = {turn.ref: turn for turn in conversation.turns}
         started = perf_counter()
         matches = retriever.retrieve(conversation.sample_id, question.text, current_turn=len(turns_by_index) + 1, top_k=k)
         rank_ms = (perf_counter() - started) * 1000
-        items = []
+        items, quoted = [], set()
         for match in matches:
             said = conversation.session_of(turns_by_index[match.source_turn].ref).date_label
             when = f"date: {match.event_date}; said {said}" if match.event_date else f"said {said}"
-            items.append(
-                ContextItem(text=f"- {match.value} ({when})", refs=match.evidence, order=match.source_turn, similarity=match.dense_similarity)
-            )
+            text = f"- {match.value} ({when})"
+            if with_turns:
+                cited = [turns_by_ref[ref] for ref in match.evidence if ref in turns_by_ref and ref not in quoted]
+                quoted.update(turn.ref for turn in cited)
+                text += "".join(f"\n  > {turn.speaker}: {turn.text}" for turn in cited)
+            items.append(ContextItem(text=text, refs=match.evidence, order=match.source_turn, similarity=match.dense_similarity))
         return Retrieved(items=items, rank_ms=rank_ms)
 
     def close(self) -> None:
         for engine in self.engines.values():
             engine.shutdown()
+
+
+class MemoryPlusTurns:
+    """The top memories, for dates and consolidated facts, plus the top raw turns, for the details a memory drops.
+
+    It ignores the k it is asked for and uses its own budget: 10 memories and 5 turns cost about as many context
+    tokens as raw-turn RAG's 10 turns, so the comparison with it is at equal context.
+    """
+
+    name = "v2_hybrid"
+
+    def __init__(self, memory: MemoryV2, turns: TurnRAG, memories: int = 10, raw_turns: int = 5) -> None:
+        self.memory, self.turns = memory, turns
+        self.memories, self.raw_turns = memories, raw_turns
+
+    def retrieve(self, conversation: Conversation, question: Question, k: int) -> Retrieved:
+        recalled = self.memory.retrieve(conversation, question, self.memories)
+        quoted = self.turns.retrieve(conversation, question, self.raw_turns)
+        return Retrieved(items=recalled.items[: self.memories] + quoted.items[: self.raw_turns], rank_ms=recalled.rank_ms + quoted.rank_ms)
 
 
 class _NoExtraction:

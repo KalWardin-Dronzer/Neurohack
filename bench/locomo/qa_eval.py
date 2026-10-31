@@ -22,7 +22,17 @@ logger = logging.getLogger(__name__)
 QA_K = 10
 QA_SIZE = 200
 QA_SEED = 2026
-REFERENCE_SYSTEM = "v2"
+# Paired accuracy differences reported, a minus b, for each pair whose systems both ran.
+PAIRS = (
+    ("v2", "full_context"),
+    ("v2", "turn_rag"),
+    ("v2", "v1_as_shipped"),
+    ("v2_turns", "v2"),
+    ("v2_hybrid", "turn_rag"),
+    ("v2_hybrid", "v2"),
+)
+# Pairs also broken down by question category.
+PAIRS_BY_CATEGORY = (("v2", "turn_rag"), ("v2_hybrid", "turn_rag"))
 
 RetrieveFn = Callable[[Conversation, Question, int], Retrieved]
 
@@ -118,16 +128,34 @@ def run_qa(
             "accuracy_held_out": bootstrap_ci(held_out).as_dict(),
         }
 
-    def labels(name: str) -> list[float]:
-        return [r["correct"] for r in sorted((r for r in records if r["system"] == name), key=lambda r: r["qid"])]
-
-    paired = {
-        f"{REFERENCE_SYSTEM}_minus_{name}": paired_difference(labels(REFERENCE_SYSTEM), labels(name)).as_dict()
-        for name in systems
-        if name != REFERENCE_SYSTEM and REFERENCE_SYSTEM in systems
-    }
+    paired, by_category = paired_differences(records, subset, list(systems))
     per_question = [
         {key: record[key] for key in ("system", "qid", "label", "f1", "prompt_tokens")}
         for record in sorted(records, key=lambda r: (r["system"], r["qid"]))
     ]
-    return {"summary": summary, "paired_accuracy_differences": paired, "per_question": per_question}
+    return {
+        "summary": summary,
+        "paired_accuracy_differences": paired,
+        "paired_accuracy_differences_by_category": by_category,
+        "per_question": per_question,
+    }
+
+
+def paired_differences(records: list[dict], subset: list[Question], systems: list[str]) -> tuple[dict, dict]:
+    """Accuracy a minus b on the same questions for each of PAIRS, overall and by category for PAIRS_BY_CATEGORY."""
+    category = {q.qid: CATEGORY_NAMES[q.category] for q in subset}
+    names = [CATEGORY_NAMES[c] for c in sorted({q.category for q in subset})]
+    correct = {(r["system"], r["qid"]): r["correct"] for r in records}
+    qids = sorted(q.qid for q in subset)
+
+    def difference(a: str, b: str, chosen: list[str]) -> dict:
+        return paired_difference([correct[(a, q)] for q in chosen], [correct[(b, q)] for q in chosen]).as_dict()
+
+    present = [(a, b) for a, b in PAIRS if a in systems and b in systems]
+    overall = {f"{a}_minus_{b}": difference(a, b, qids) for a, b in present}
+    by_category = {
+        f"{a}_minus_{b}": {name: difference(a, b, [q for q in qids if category[q] == name]) for name in names}
+        for a, b in present
+        if (a, b) in PAIRS_BY_CATEGORY
+    }
+    return overall, by_category
