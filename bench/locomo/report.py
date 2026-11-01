@@ -6,6 +6,8 @@ from pathlib import Path
 RESULTS_DIR = Path("bench/results")
 RETRIEVAL_PATH = RESULTS_DIR / "locomo_retrieval.json"
 QA_PATH = RESULTS_DIR / "locomo_qa.json"
+CONFIRM_PATH = RESULTS_DIR / "locomo_qa_confirm.json"
+CONFIRM_PAIR = "v2_hybrid_minus_turn_rag"
 DISTILL_PATH = RESULTS_DIR / "locomo_distill.json"
 RESULTS_MD = Path("RESULTS.md")
 README = Path("README.md")
@@ -162,6 +164,40 @@ def _qa_section(data: dict) -> list[str]:
     return lines
 
 
+def confirmed(confirm: dict) -> bool:
+    """The criterion declared in docs/DESIGN.md before the run: the paired interval lies above zero."""
+    return confirm["paired_accuracy_differences"][CONFIRM_PAIR]["lo"] > 0
+
+
+def _confirm_section(confirm: dict) -> list[str]:
+    subset, summary = confirm["subset"], confirm["summary"]
+    estimate = confirm["paired_accuracy_differences"][CONFIRM_PAIR]
+    lines = [
+        f"## Confirmation on fresh questions (n = {subset['size']}, seed {subset['seed']})",
+        "",
+        "The hybrid was chosen on the subset above, so its score there is not an out-of-sample estimate. This run "
+        "asks raw-turn RAG and the hybrid only, with the same models and k, on a fresh stratified subset that shares "
+        "no question with the first. The criterion was declared in docs/DESIGN.md before it ran: the hybrid is "
+        "confirmed if the 95% interval of its paired difference against raw-turn RAG lies above zero.",
+        "",
+        "| System | Judge accuracy | Token F1 | Prompt tokens per question |",
+        "|---|---|---|---|",
+    ]
+    for name, result in summary.items():
+        lines.append(f"| {LABELS[name]} | {pct(result['accuracy'])} | {pct(result['f1'])} | {result['mean_prompt_tokens']:,.0f} |")
+    verdict = "Confirmed" if confirmed(confirm) else "Not confirmed"
+    lines += ["", f"Hybrid minus raw-turn RAG: {signed_pct(estimate)}. **{verdict}.**", ""]
+    by_category = confirm.get("paired_accuracy_differences_by_category", {}).get(CONFIRM_PAIR)
+    if by_category:
+        categories = list(by_category)
+        lines.append("| Pair | " + " | ".join(categories) + " |")
+        lines.append("|---|" + "---|" * len(categories))
+        lines.append("| Hybrid minus raw-turn RAG | " + " | ".join(signed_pct(by_category[c]) for c in categories) + " |")
+        counts = subset["category_counts"]
+        lines += ["", "Subset questions per category: " + ", ".join(f"{c} {counts[c]}" for c in categories) + ".", ""]
+    return lines
+
+
 EXTRACTOR_LABELS = {
     "teacher": "Teacher: `{teacher}` (API)",
     "student": "Student: {base_short} + LoRA (transformers, bf16)",
@@ -284,7 +320,8 @@ def _distill_section(data: dict) -> list[str]:
     return lines
 
 
-def render(retrieval: dict | None, qa: dict | None, distill: dict | None = None) -> str:
+def render(retrieval: dict | None, qa: dict | None, distill: dict | None = None,
+           confirm: dict | None = None) -> str:
     lines = [
         "# LoCoMo results",
         "",
@@ -307,6 +344,8 @@ def render(retrieval: dict | None, qa: dict | None, distill: dict | None = None)
         lines += _retrieval_section(retrieval)
     if qa:
         lines += _qa_section(qa)
+    if confirm:
+        lines += _confirm_section(confirm)
     if distill:
         lines += _distill_section(distill)
     if source:
@@ -359,12 +398,13 @@ def _readme_distill(distill: dict) -> list[str]:
     return lines
 
 
-def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict | None = None) -> str:
+def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict | None = None,
+                          confirm: dict | None = None) -> str:
     """The README's headline table, built from the same estimates as RESULTS.md so the two cannot drift."""
     if not retrieval:
         return "*LoCoMo results appear here once `python -m bench.locomo report` has run.*"
     if distill:
-        return "\n".join([render_readme_summary(retrieval, qa), *_readme_distill(distill)])
+        return "\n".join([render_readme_summary(retrieval, qa, confirm=confirm), *_readme_distill(distill)])
     if not qa:
         lines = [
             "## Results on LoCoMo",
@@ -403,7 +443,20 @@ def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict
         "Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and "
         "[docs/DESIGN.md](docs/DESIGN.md).",
     ]
-    if {"v2_turns", "v2_hybrid"} & set(qa["summary"]):
+    if confirm:
+        hybrid, rag = confirm["summary"]["v2_hybrid"], confirm["summary"]["turn_rag"]
+        outcome = ("which confirms the gain" if confirmed(confirm)
+                   else "which does not confirm the gain")
+        lines += [
+            "",
+            "The two v2 variants were chosen on these same questions. On "
+            f"{confirm['subset']['size']} fresh questions (seed {confirm['subset']['seed']}), under a criterion "
+            f"declared before the run, the hybrid scored {pct(hybrid['accuracy'])} against "
+            f"{pct(rag['accuracy'])} for raw-turn RAG, a paired difference of "
+            f"{signed_pct(confirm['paired_accuracy_differences'][CONFIRM_PAIR])}, {outcome}. Details are in "
+            "[RESULTS.md](RESULTS.md).",
+        ]
+    elif {"v2_turns", "v2_hybrid"} & set(qa["summary"]):
         lines += [
             "",
             "The two v2 variants were chosen on these same questions, so their scores are not out-of-sample "
@@ -421,9 +474,10 @@ def _with_readme_summary(readme: str, summary: str) -> str:
 
 def write_or_check(check: bool) -> int:
     retrieval, qa, distill = _load(RETRIEVAL_PATH), _load(QA_PATH), _load(DISTILL_PATH)
-    results_text = render(retrieval, qa, distill)
+    confirm = _load(CONFIRM_PATH)
+    results_text = render(retrieval, qa, distill, confirm)
     readme_now = README.read_text(encoding="utf-8").replace("\r\n", "\n")
-    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa, distill))
+    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa, distill, confirm))
     if check:
         current = RESULTS_MD.read_text(encoding="utf-8").replace("\r\n", "\n") if RESULTS_MD.exists() else ""
         stale = [name for name, ok in (("RESULTS.md", current == results_text), ("README.md", readme_now == readme_text)) if not ok]

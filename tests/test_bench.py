@@ -300,3 +300,21 @@ def test_qa_section_names_both_sides_of_each_pair_and_breaks_pairs_down_by_categ
     text = "\n".join(report._qa_section(qa))
     assert "- v2 hybrid minus Raw-turn RAG: +10.0 pts [-5.0, +20.0]" in text
     assert "| v2 hybrid minus Raw-turn RAG | +50.0 pts [+40.0, +60.0] | +50.0 pts [+40.0, +60.0] |" in text
+
+
+def test_confirmation_verdict_follows_the_declared_criterion() -> None:
+    """Confirmed only if the paired interval lies wholly above zero; a positive mean alone is not enough."""
+    estimate = {"mean": 0.6, "lo": 0.5, "hi": 0.7, "n": 10}
+    summary = {name: {"accuracy": estimate, "f1": estimate, "mean_prompt_tokens": 100.0} for name in ("turn_rag", "v2_hybrid")}
+
+    def confirm(lo: float) -> dict:
+        return {
+            "subset": {"size": 10, "seed": 2027, "category_counts": {"temporal": 10}},
+            "summary": summary,
+            "paired_accuracy_differences": {"v2_hybrid_minus_turn_rag": {"mean": 0.08, "lo": lo, "hi": 0.15, "n": 10}},
+        }
+
+    assert report.confirmed(confirm(0.01))
+    assert "**Confirmed.**" in "\n".join(report._confirm_section(confirm(0.01)))
+    assert not report.confirmed(confirm(-0.01))
+    assert "**Not confirmed.**" in "\n".join(report._confirm_section(confirm(-0.01)))
