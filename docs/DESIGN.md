@@ -155,6 +155,15 @@ before any QA call, with the coverage diagnostic above:
 The hybrid counts as confirmed if the 95% interval of its paired difference against raw-turn RAG lies above
 zero. The result is reported either way.
 
+**It was confirmed.** On the fresh questions the hybrid scored 68.5% [62.0, 75.0] against 55.0% [48.5, 62.0]
+for raw-turn RAG, a paired difference of +13.5 pts [+6.5, +20.5], at 680 prompt tokens against 576.
+
+- Both systems scored lower than on the first subset, so these questions are harder; the gap held.
+- Single-hop, the category that motivated the fix, gained +13.8 pts [+5.5, +22.9].
+- Open-domain went the other way, -16.7 pts [-41.7, +0.0], but on only 12 questions.
+
+RESULTS.md has the per-category table.
+
 ## Benchmark protocol
 
 **Dataset.** LoCoMo (Maharana et al., ACL 2024) has 10 conversations, 272 sessions and 5,882 turns, with
@@ -355,9 +364,8 @@ The tables are in RESULTS.md.
 
 ## Limits and next steps
 
-- **Confirm the hybrid out of sample, then ship it.** It was chosen on the 200 QA questions, so re-run it
-  against raw-turn RAG on a fresh stratified subset before treating +9.5 pts as the effect size. Then make it
-  the service's retrieval mode; today only the benchmark has it (see "What question answering showed").
+- **Ship the hybrid.** It beat raw-turn RAG on fresh questions too (+13.5 pts [+6.5, +20.5]), but only the
+  benchmark has it; the service's retrieval still returns memories alone (see "What question answering showed").
 - **Constrained decoding without the cost.** Train the student on keys in alphabetical order, or serve it
   through a runtime whose grammar keeps the schema's order. Either way, constrained decoding would then guard
   the format without changing it.

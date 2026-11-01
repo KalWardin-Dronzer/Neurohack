@@ -92,6 +92,23 @@ Paired differences by category:
 
 Subset questions per category: multi-hop 37, temporal 42, open-domain 12, single-hop 109.
 
+## Confirmation on fresh questions (n = 200, seed 2027)
+
+The hybrid was chosen on the subset above, so its score there is not an out-of-sample estimate. This run asks raw-turn RAG and the hybrid only, with the same models and k, on a fresh stratified subset that shares no question with the first. The criterion was declared in docs/DESIGN.md before it ran: the hybrid is confirmed if the 95% interval of its paired difference against raw-turn RAG lies above zero.
+
+| System | Judge accuracy | Token F1 | Prompt tokens per question |
+|---|---|---|---|
+| Raw-turn RAG (dense top-k over turns) | 55.0% [48.5, 62.0] | 45.3% [39.6, 50.9] | 576 |
+| v2 hybrid (10 memories + 5 raw turns) | 68.5% [62.0, 75.0] | 51.0% [45.8, 56.2] | 680 |
+
+Hybrid minus raw-turn RAG: +13.5 pts [+6.5, +20.5]. **Confirmed.**
+
+| Pair | multi-hop | temporal | open-domain | single-hop |
+|---|---|---|---|---|
+| Hybrid minus raw-turn RAG | +21.6 pts [+2.7, +40.5] | +14.3 pts [+0.0, +31.0] | -16.7 pts [-41.7, +0.0] | +13.8 pts [+5.5, +22.9] |
+
+Subset questions per category: multi-hop 37, temporal 42, open-domain 12, single-hop 109.
+
 ## Distilled local extractor
 
 `Qwen/Qwen3.5-0.8B` (revision `2fc0636`) was fine-tuned with LoRA on the teacher's extractions from 151 sessions of 6 conversations, with conv-48 for validation. The table covers the held-out conversations conv-41, conv-44, conv-47: 91 sessions and 425 questions with evidence, which no model was tuned on. Every row stores memories in the same v2 engine and retrieves them with the same RRF settings; only the extractor differs. The local models ran on an NVIDIA GeForce RTX 3050 Laptop GPU through `distill.serve` (transformers, bf16, greedy decoding, no output constraints) or, exported, through Ollama 0.40.13 (a Q8_0 GGUF from llama.cpp's converter, greedy decoding, thinking off; in rows marked constrained, Ollama also constrains decoding to the JSON schema).

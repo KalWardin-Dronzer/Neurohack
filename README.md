@@ -24,7 +24,7 @@ original submission.
 
 Recall covers all 1,535 questions with annotated evidence. QA covers a stratified subset of 200 (seed 2026), answered by `gemini-3.1-flash-lite` and graded by `gemini-3.5-flash-lite`. Brackets are 95% bootstrap intervals. Paired differences, ablations, per-category tables and the protocol are in [RESULTS.md](RESULTS.md) and [docs/DESIGN.md](docs/DESIGN.md).
 
-The two v2 variants were chosen on these same questions, so their scores are not out-of-sample estimates; [docs/DESIGN.md](docs/DESIGN.md#what-question-answering-showed) explains how, and why a confirmation on fresh questions comes next.
+The two v2 variants were chosen on these same questions. On 200 fresh questions (seed 2027), under a criterion declared before the run, the hybrid scored 68.5% [62.0, 75.0] against 55.0% [48.5, 62.0] for raw-turn RAG, a paired difference of +13.5 pts [+6.5, +20.5], which confirms the gain. Details are in [RESULTS.md](RESULTS.md).
 
 ### A distilled extractor that runs on a laptop
 
