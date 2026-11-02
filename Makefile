@@ -1,4 +1,4 @@
-.PHONY: install run test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-qa-confirm bench-report \
+.PHONY: install run mcp test demo smoke bench-download bench-ingest bench-retrieval bench-qa bench-qa-confirm bench-report \
 	distill-data distill-train distill-export distill-serve distill-serve-base bench-distill-student bench-distill-base \
 	bench-distill-ollama bench-distill
 
@@ -18,6 +18,10 @@ install:
 
 run:
 	python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+# The MCP server over stdio is launched by its client (see the README); this serves streamable HTTP instead.
+mcp:
+	python -m app.mcp_server --http --port 8765
 
 test:
 	pytest -q
