@@ -30,6 +30,7 @@ V2_DIR = RUNS / "v2"
 CACHE = RUNS / "llm_cache.sqlite"
 QA_RECORDS = RUNS / "qa_records.jsonl"
 JUDGE_SAMPLE = RUNS / "judge_validation.csv"
+JUDGE_KEY = RUNS / "judge_validation_key.csv"
 FLOORS = (0.5, 0.6, 0.7)
 
 
@@ -470,44 +471,76 @@ def cmd_report(args) -> int:
 
 
 def cmd_judge_sample(args) -> int:
-    """An equal share of judged answers from each named system, in random order.
+    """An equal share of judged answers from each named system, in random order, for labelling by hand.
 
-    v1 is left out by default: nearly all its answers are "not mentioned", which any judge grades correctly, so
-    sampling it would inflate agreement without testing the judge.
+    The file to label is blind: it has no system names and no judge verdicts, which go to a separate key file. By
+    default it draws from the confirmation run, so the judge is checked on the comparison the README quotes
+    (the hybrid against raw-turn RAG on fresh questions).
     """
-    records = [json.loads(line) for line in QA_RECORDS.read_text(encoding="utf-8").splitlines() if line.strip()]
+    records = [json.loads(line) for line in args.records.read_text(encoding="utf-8").splitlines() if line.strip()]
     systems = args.systems.split(",")
     rng = random.Random(args.seed)
     sample = []
     for i, system in enumerate(systems):
         pool = [record for record in records if record["system"] == system]
         if not pool:
-            sys.exit(f"no judged answers for {system}")
+            sys.exit(f"no judged answers for {system} in {args.records}")
         sample += rng.sample(pool, min(args.n // len(systems) + (i < args.n % len(systems)), len(pool)))
     rng.shuffle(sample)
+    if JUDGE_SAMPLE.exists() and any(row["your_label"].strip() for row in csv.DictReader(JUDGE_SAMPLE.open(encoding="utf-8"))):
+        sys.exit(f"{JUDGE_SAMPLE} already has labels; move it aside before drawing a new sample")
     JUDGE_SAMPLE.parent.mkdir(parents=True, exist_ok=True)
-    with JUDGE_SAMPLE.open("w", encoding="utf-8", newline="") as handle:
+    with JUDGE_SAMPLE.open("w", encoding="utf-8-sig", newline="") as handle:
         writer = csv.writer(handle)
-        writer.writerow(["system", "qid", "question", "gold", "answer", "judge_label", "your_label"])
-        for record in sample:
-            writer.writerow([record["system"], record["qid"], record["question"], record["gold"], record["answer"], record["label"], ""])
-    print(f"wrote {JUDGE_SAMPLE}: fill your_label with CORRECT or WRONG without looking at judge_label, then run judge-agreement")
+        writer.writerow(["item", "question", "gold_answer", "answer", "your_label"])
+        for item, record in enumerate(sample, start=1):
+            writer.writerow([item, record["question"], record["gold"], record["answer"], ""])
+    with JUDGE_KEY.open("w", encoding="utf-8", newline="") as handle:
+        writer = csv.writer(handle)
+        writer.writerow(["item", "system", "qid", "judge_label"])
+        for item, record in enumerate(sample, start=1):
+            writer.writerow([item, record["system"], record["qid"], record["label"]])
+    print(f"wrote {JUDGE_SAMPLE} ({len(sample)} answers): fill your_label with CORRECT or WRONG, then run judge-agreement")
     return 0
 
 
-def cmd_judge_agreement(_args) -> int:
-    with JUDGE_SAMPLE.open(encoding="utf-8", newline="") as handle:
-        rows = [row for row in csv.DictReader(handle) if row["your_label"].strip()]
-    if not rows:
-        sys.exit(f"no rows in {JUDGE_SAMPLE} have your_label filled in")
-    pairs = [(row["judge_label"].strip().upper(), row["your_label"].strip().upper()) for row in rows]
+def _kappa(pairs: list[tuple[str, str]]) -> tuple[float, float]:
     agreement = sum(judge == human for judge, human in pairs) / len(pairs)
     judge_yes = sum(judge == "CORRECT" for judge, _ in pairs) / len(pairs)
     human_yes = sum(human == "CORRECT" for _, human in pairs) / len(pairs)
     chance = judge_yes * human_yes + (1 - judge_yes) * (1 - human_yes)
-    kappa = (agreement - chance) / (1 - chance) if chance < 1 else 1.0
-    _write_json(report.RESULTS_DIR / "judge_agreement.json", {"labelled": len(pairs), "agreement": agreement, "cohens_kappa": kappa})
-    print(f"{len(pairs)} labels: agreement {agreement:.1%}, Cohen's kappa {kappa:.2f}")
+    return agreement, (agreement - chance) / (1 - chance) if chance < 1 else 1.0
+
+
+def cmd_judge_agreement(_args) -> int:
+    with JUDGE_SAMPLE.open(encoding="utf-8-sig", newline="") as handle:
+        labels = {row["item"]: row["your_label"].strip().upper() for row in csv.DictReader(handle) if row["your_label"].strip()}
+    with JUDGE_KEY.open(encoding="utf-8", newline="") as handle:
+        key = {row["item"]: row for row in csv.DictReader(handle)}
+    bad = sorted({label for label in labels.values() if label not in ("CORRECT", "WRONG")})
+    if bad:
+        sys.exit(f"labels must be CORRECT or WRONG; found {bad}")
+    if not labels:
+        sys.exit(f"no rows in {JUDGE_SAMPLE} have your_label filled in")
+    rows = [(key[item]["system"], key[item]["judge_label"].strip().upper(), label) for item, label in labels.items()]
+    agreement, kappa = _kappa([(judge, human) for _, judge, human in rows])
+    by_system = {}
+    for system in sorted({system for system, _, _ in rows}):
+        pairs = [(judge, human) for s, judge, human in rows if s == system]
+        by_system[system] = {
+            "labelled": len(pairs),
+            "agreement": sum(j == h for j, h in pairs) / len(pairs),
+            "judge_accuracy": sum(j == "CORRECT" for j, _ in pairs) / len(pairs),
+            "human_accuracy": sum(h == "CORRECT" for _, h in pairs) / len(pairs),
+        }
+    _write_json(report.RESULTS_DIR / "judge_agreement.json",
+                {"labelled": len(rows), "agreement": agreement, "cohens_kappa": kappa, "by_system": by_system,
+                 "judge_says_correct_human_says_wrong": sum(j == "CORRECT" and h == "WRONG" for _, j, h in rows),
+                 "judge_says_wrong_human_says_correct": sum(j == "WRONG" and h == "CORRECT" for _, j, h in rows)})
+    print(f"{len(rows)} labels: agreement {agreement:.1%}, Cohen's kappa {kappa:.2f}")
+    for system, stats in by_system.items():
+        print(f"  {system}: {stats['labelled']} labels, agreement {stats['agreement']:.0%}, "
+              f"judge {stats['judge_accuracy']:.0%} correct vs you {stats['human_accuracy']:.0%}")
     return 0
 
 
@@ -559,7 +592,8 @@ def main(argv: list[str] | None = None) -> int:
     sample = sub.add_parser("judge-sample")
     sample.add_argument("--n", type=int, default=50)
     sample.add_argument("--seed", type=int, default=7)
-    sample.add_argument("--systems", default="full_context,turn_rag,v2", help="comma-separated; the sample is split equally")
+    sample.add_argument("--systems", default="turn_rag,v2_hybrid", help="comma-separated; the sample is split equally")
+    sample.add_argument("--records", type=Path, default=RUNS / "qa_confirm_records.jsonl")
     sample.set_defaults(func=cmd_judge_sample)
     sub.add_parser("judge-agreement").set_defaults(func=cmd_judge_agreement)
 

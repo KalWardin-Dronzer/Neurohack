@@ -152,7 +152,7 @@ python -m bench.locomo report      # regenerates RESULTS.md from bench/results/*
 
 The default models fit the Gemini free tier, and the protocol (exclusions, subset, judge, intervals) is in
 [docs/DESIGN.md](docs/DESIGN.md#benchmark-protocol). To check the LLM judge yourself, run
-`python -m bench.locomo judge-sample`, label the 50 exported answers, then run `judge-agreement`.
+`python -m bench.locomo judge-sample`, label the 50 exported answers (blind: no system names or judge verdicts), then run `judge-agreement`.
 
 ## Run the extractor locally
 
