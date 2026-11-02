@@ -147,8 +147,8 @@ before any QA call, with the coverage diagnostic above:
   - It scores 2 points below full context, which uses 33 times the prompt.
 - Quoting each memory's cited turns helps less: +10.5 pts over v2 [+4.5, +16.5], with 1.7 times the
   hybrid's prompt.
-- Both variants were chosen on these 200 questions, so these are not out-of-sample estimates. The hybrid also
-  exists only in the benchmark; the service still returns memories alone.
+- Both variants were chosen on these 200 questions, so these are not out-of-sample estimates. At this point the
+  hybrid existed only in the benchmark; it has since moved into the service (see "The hybrid in the service").
 
 **Confirmation, declared before it ran.** `make bench-qa-confirm` asks 200 fresh questions (stratified, seed
 2027, none from the subset above) of raw-turn RAG and the hybrid only, with the same answer model, judge and k.
@@ -163,6 +163,52 @@ for raw-turn RAG, a paired difference of +13.5 pts [+6.5, +20.5], at 680 prompt 
 - Open-domain went the other way, -16.7 pts [-41.7, +0.0], but on only 12 questions.
 
 RESULTS.md has the per-category table.
+
+## The hybrid in the service
+
+**One code path.** `MemoryEngine.recall` returns the top 10 memories, ranked as before, and the top 5 raw turns by
+dense similarity: the configuration that was measured. Live replies, `POST /sessions/{id}/recall` and the MCP
+`recall` tool all use it, and `TURN_TOP_K=0` returns memories alone. The benchmark's `v2_hybrid` now calls
+`MemoryEngine.recall` instead of combining its own two systems. Rebuilt through it, all 400 hybrid answer prompts
+of the two QA runs (200 questions each) are byte-identical to the prompts that were sent: each was found in the
+LLM cache, which is keyed by a hash of the exact request, and each cached answer equals the recorded one
+(`python -m scripts.check_hybrid_parity`, which needs the runs' cache). With a raw-turn budget of 4 instead of
+5, none of the 400 is found. The QA results therefore describe what the service
+retrieves. The reply prompt the service writes around that context was not measured.
+
+**Raw turns.** Each turn is embedded as `speaker: text`, as raw-turn RAG embeds it, in the background worker for
+live turns and at once for `remember` and batch ingestion. Assistant replies are not indexed, because they
+restate what the user said or are generated and may be wrong. A live reply searches only turns older than the
+short-term window, which is already in its prompt. A database written before this change gains the turn index
+when the engine opens it; opening the benchmark's databases embedded their 5,882 turns.
+
+**Forgetting.** `forget` deletes the memory and redacts the turns it cites (their text becomes `[forgotten]` and
+their embeddings are deleted), because otherwise raw-turn recall would bring the fact straight back. A redacted
+turn keeps its id, so ids are never reused. Other memories drawn from the same turns are kept.
+
+**Two processes, one database.** Each process caches its memory and turn matrices. The cache key includes
+SQLite's `data_version`, which changes whenever another connection commits, so the MCP server and the HTTP
+service can share a file: a test checks that one engine sees the other's new memories and forgotten turns.
+
+**Cost.** In the 1,000-turn smoke test, which sends turns back to back, median turn latency rose from 26 ms to
+64 ms (CPU, BGE-small), because each turn is now embedded in the background while the next one is answered. With
+the worker idle, a turn took 28.5 ms at the median in a 630-turn session, of which rebuilding the turn matrix
+after a new turn is 4.6 ms.
+
+**The MCP server** (`app/mcp_server.py`) exposes `remember`, `recall`, `forget` and `list_memories` over stdio or
+streamable HTTP. It loads the embedding model before answering the client's handshake, about 13 s on a laptop CPU
+with the model cached. Loading it in a background thread instead would let the handshake return at once, but on
+Windows it hangs: once a thread is blocked reading the stdin pipe, a native library that sentence-transformers
+loads (scipy, through scikit-learn) never finishes loading.
+
+**Live extraction with the distilled student.** A five-turn MCP session through Ollama showed that the student
+does not transfer to single live turns. With the speaker given as `user`, it credited the user's marathon
+training, morning standups and new dog to their sister Asha, after the turn that mentioned her. With the speaker
+named, it said the user taught chemistry, which was the sister's job. The teacher (`gemini-3.5-flash-lite`) got
+every subject right on the same turns. The student learned from whole sessions between two named speakers, so
+single first-person turns are outside what it saw. Both models also misdated "last weekend" said on a Monday,
+the student to a future date; the raw turn, recalled beside the memory, still carries the original words. This
+was one session, not a measurement.
 
 ## Benchmark protocol
 
@@ -364,13 +410,12 @@ The tables are in RESULTS.md.
 
 ## Limits and next steps
 
-- **Ship the hybrid.** It beat raw-turn RAG on fresh questions too (+13.5 pts [+6.5, +20.5]), but only the
-  benchmark has it; the service's retrieval still returns memories alone (see "What question answering showed").
+- **Live extraction with a local model.** Distill on single live turns as well as whole sessions, and measure
+  subject attribution, before recommending the student for the live service (see "The hybrid in the service").
 - **Constrained decoding without the cost.** Train the student on keys in alphabetical order, or serve it
   through a runtime whose grammar keeps the schema's order. Either way, constrained decoding would then guard
   the format without changing it.
 - **QA accuracy for the student,** with the same answer model and judge as the other systems.
-- **Agent access.** Expose `remember`, `recall` and `forget` as an MCP server so any agent can use the store.
 - **More data.** Run LongMemEval for single-user, multi-session histories with knowledge updates.
 - **Dedupe and summaries.** Events are deduplicated only on identical text, so near-duplicates across
   sessions can crowd the top k. Merging near-duplicates by embedding, or writing per-session summaries, is

@@ -1,9 +1,10 @@
 # Neurohack: long-term memory for LLM conversations
 
 A memory service for chat assistants. An LLM extracts what is worth remembering from each conversation as
-typed, dated memories that cite the turns they came from. The service retrieves the relevant memories at any
-later turn by fusing dense and BM25 rankings, and newer facts replace stale ones, so the assistant never has
-to replay the full history.
+typed, dated memories that cite the turns they came from. At any later turn the service recalls the relevant
+memories, by fusing dense and BM25 rankings, together with the earlier raw turns most like the question, for
+the details a memory drops. Newer facts replace stale ones, so the assistant never has to replay the full
+history. It serves an HTTP API and an MCP server, so any MCP client can remember, recall and forget.
 
 It began as a hackathon entry (Neurohack, IIT Guwahati, **26th nationally**), preserved at tag
 [`v1.0-hackathon`](https://github.com/KalWardin-Dronzer/Neurohack/tree/v1.0-hackathon). v2 rebuilds it and
@@ -58,11 +59,17 @@ Why each decision was made, and what the benchmark does and does not show:
 ## How it works
 
 ```text
-turn ──► store turn ──► dense (BGE, cached matrix) ─┐
-                    └─► BM25 (SQLite FTS5) ─────────┴─► RRF ─► top k ─► reply with memories
-     └─► background worker ─► LLM extraction (schema-checked, cited, dated) ─► upsert: memories accumulate;
+turn ──► store turn ──► memories: dense (BGE) ─┐
+                    │             BM25 (FTS5) ──┴─► RRF ─► top 10 ─┐
+                    └─► raw turns: dense (BGE) ──────────► top 5 ──┴─► reply with memories and earlier turns
+     └─► background worker ─► embed the turn
+                          └─► LLM extraction (schema-checked, cited, dated) ─► upsert: memories accumulate;
                                                          a replacing fact deprecates its closest match
 ```
+
+The 10 memories plus 5 raw turns are the hybrid measured above. The benchmark's hybrid calls the service's own
+retrieval, `MemoryEngine.recall`, and rebuilt through it, every one of the 400 hybrid prompts from the two QA
+runs is byte-identical to the prompt that was scored. `TURN_TOP_K=0` returns memories alone.
 
 Full diagram: [ARCHITECTURE_DIAGRAM.txt](ARCHITECTURE_DIAGRAM.txt). The LLM client speaks the
 OpenAI-compatible API, so Gemini, Ollama, vLLM and OpenAI work by changing `LLM_BASE_URL`. It caches every
@@ -80,11 +87,58 @@ python -m uvicorn app.main:app --port 8000
 
 Then open `http://localhost:8000/docs`. The main endpoints:
 
-- `POST /sessions/{id}/turns`: send a user turn, get a reply (and the memories used, with `expose_memory`).
+- `POST /sessions/{id}/turns`: send a user turn, get a reply (and the memories and earlier turns used, with
+  `expose_memory`).
+- `POST /sessions/{id}/recall`: the memories and earlier turns for a query, and a rendered `context` block, for
+  a client that writes its own prompt.
 - `GET /sessions/{id}/memories`: list what the system remembers.
+- `DELETE /sessions/{id}/memories/{memory_id}`: forget a memory. The turns it cites are redacted too, so raw-turn
+  recall cannot bring it back.
 - `GET /health`: shows which extractor, embedding model and retrieval mode are active.
 
 Real request and response pairs are in [API_SAMPLE_RESPONSES.md](API_SAMPLE_RESPONSES.md).
+
+## Use it from an MCP client
+
+`python -m app.mcp_server` serves the same store over the Model Context Protocol, with four tools:
+
+| Tool | What it does |
+|---|---|
+| `remember` | stores a turn and extracts its memories at once, returning them |
+| `recall` | the top memories and earlier turns for a query, with a `context` block ready for a prompt |
+| `forget` | deletes a memory and redacts the turns it cites |
+| `list_memories` | a session's active memories |
+
+Each takes a `session_id` (default `default`): use one per user. Settings come from `.env`, as for the HTTP
+service, and the two can share one database file. To add it to Claude Code (Windows paths shown):
+
+```bash
+claude mcp add neurohack-memory -e PYTHONPATH=C:\path\to\Neurohack -e HF_HUB_OFFLINE=1 -- C:\path\to\Neurohack\.venv\Scripts\python.exe -m app.mcp_server
+```
+
+Or in a client's JSON config, such as Claude Desktop's:
+
+```json
+{
+  "mcpServers": {
+    "neurohack-memory": {
+      "command": "C:\\path\\to\\Neurohack\\.venv\\Scripts\\python.exe",
+      "args": ["-m", "app.mcp_server"],
+      "env": {"PYTHONPATH": "C:\\path\\to\\Neurohack", "HF_HUB_OFFLINE": "1"}
+    }
+  }
+}
+```
+
+The server loads the embedding model before it answers the client's handshake: about 13 seconds on a laptop CPU
+once the model is cached. `HF_HUB_OFFLINE=1` skips the update check against the Hugging Face Hub, which adds
+several seconds; leave it out for the first run, which downloads the model. If a client gives up sooner, raise its
+startup timeout (Claude Code: `MCP_TIMEOUT=60000`). `python -m app.mcp_server --http` serves streamable HTTP at
+`http://127.0.0.1:8765/mcp` instead.
+
+For live extraction, use an API model such as the default `gemini-3.5-flash-lite`. The distilled student below
+was trained on whole sessions between two named speakers, and on single live turns it mixes up who a fact is
+about ([docs/DESIGN.md](docs/DESIGN.md#the-hybrid-in-the-service)).
 
 ## Reproduce the benchmark
 
@@ -159,6 +213,9 @@ pytest -q
 The tests cover:
 
 - retrieval: the BM25 direction, RRF arithmetic, vector-model mismatches and supersession;
+- the hybrid in the service: raw turns beyond the short-term window, unindexed assistant replies, `forget`
+  redacting cited turns, two processes sharing a database, and upgrading an older database;
+- the MCP server, launched over stdio as a client launches it;
 - extraction: LLM output validation, the repair round, the regex fallback and quota handling;
 - the benchmark: evidence-id repair, the bootstrap statistics, and a check that the vendored v1 baseline
   still matches the tag;
@@ -171,9 +228,11 @@ The tests cover:
 app/
   llm/client.py        OpenAI-compatible client: JSON-schema output, repair, cache, pacing, retries
   memory/extractor.py  LLM and regex extractors
-  memory/retriever.py  dense + BM25 with Reciprocal Rank Fusion
-  memory/store.py      SQLite store, FTS5 index, float32 vectors, supersession
-  memory/service.py    engine: live turns, batch ingestion, background worker
+  memory/retriever.py  memories: dense + BM25 with Reciprocal Rank Fusion; raw turns: dense
+  memory/store.py      SQLite store, FTS5 index, float32 vectors, supersession, forgetting
+  memory/service.py    engine: hybrid recall, live turns, remember, batch ingestion, background worker
+  memory/context.py    one rendering of recalled memories and turns for replies, /recall and MCP
+  mcp_server.py        the MCP server: remember, recall, forget, list_memories
 bench/locomo/          dataset loader, systems, retrieval, QA and distillation evaluation, report
   legacy_v1/           the v1.0-hackathon code, frozen as a baseline
 distill/               teacher-data split, LoRA training, a local OpenAI-compatible server, GGUF export

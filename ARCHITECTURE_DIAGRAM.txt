@@ -5,21 +5,28 @@ Mermaid flowchart (paste into Mermaid Live Editor, GitHub, or any markdown viewe
 ```mermaid
 flowchart TD
     U[User turn] --> A["POST /sessions/{session_id}/turns"]
+    M["MCP tools: remember, recall, forget, list_memories"] --> H
+    P["POST /sessions/{session_id}/recall"] --> H
 
     subgraph FP[Fast path: synchronous]
         A --> B[Persist turn in SQLite]
         B --> C[Short-term window: last K turns]
-        C --> D1["Dense ranking: bge-small-en-v1.5 cosine over a cached float32 matrix"]
-        C --> D2["Lexical ranking: SQLite FTS5 BM25 with Porter stemming"]
+        C --> H[Hybrid recall]
+        H --> D1["Dense ranking of memories: bge-small-en-v1.5 cosine over a cached float32 matrix"]
+        H --> D2["Lexical ranking of memories: SQLite FTS5 BM25 with Porter stemming"]
+        H --> D3["Dense ranking of raw turns older than the window"]
         D1 --> F[Reciprocal Rank Fusion]
         D2 --> F
-        F --> G["Optional similarity floor, top k"]
-        G --> E[Reply: LLM with dated memories, or rule-based fallback]
+        F --> G["Top 10 memories (optional similarity floor)"]
+        D3 --> T["Top 5 raw turns"]
+        G --> E[Reply: LLM with dated memories and earlier turns, or rule-based fallback]
+        T --> E
     end
 
     A --> Q[Queue extraction task]
 
     subgraph BG[Background worker]
+        Q --> TE["Embed the turn (assistant replies are not indexed)"]
         Q --> X["LLM structured extraction: JSON schema, Pydantic, evidence ids, ISO dates"]
         X -->|LLM unavailable| R[Regex fallback]
         X --> Y["Upsert: memories accumulate; a fact marked as replacing deprecates its most similar value"]
@@ -34,21 +41,27 @@ flowchart TD
 
     Z1 --> D1
     Z2 --> D2
+    TE --> D3
 ```
 
 Request lifecycle:
 
 1. The client sends a user turn.
-2. The turn is stored, and the most relevant memories are retrieved by fusing the dense and BM25 rankings.
-3. A reply is generated with those memories and returned immediately.
-4. A background worker extracts typed memories from the turn, each citing the turns it came from.
+2. The turn is stored. The hybrid recalls the 10 most relevant memories, by fusing their dense and BM25
+   rankings, and the 5 earlier raw turns most similar to the turn, from beyond the short-term window.
+3. A reply is generated with those memories and turns and returned immediately.
+4. A background worker embeds the turn and extracts typed memories from it, each citing the turns it came from.
 5. Memories accumulate. A fact the model marks as replacing an earlier one deprecates the most similar value
    under the same subject and key, and records the lineage.
 6. The next turn retrieves from the updated store without replaying history.
 
+`remember` (MCP) extracts at once instead of in the background. `forget` deletes a memory and redacts the turns
+it cites, so neither half of the hybrid can return it.
+
 Core records:
 
-1. Turn: `session_id`, `turn_id`, `role`, `content`, `created_at`
+1. Turn: `session_id`, `turn_id`, `role`, `content`, `created_at`, `said_on`
 2. Memory: `memory_id`, `type`, `subject`, `key`, `value`, `event_date`, `evidence`, `source_turn`,
    `confidence`, `status`, `supersedes_memory_id`
-3. Embedding: `memory_id`, `model_id`, `dim`, float32 `vector`
+3. Memory embedding: `memory_id`, `model_id`, `dim`, float32 `vector`
+4. Turn embedding: `session_id`, `turn_id`, `model_id`, `dim`, float32 `vector`
