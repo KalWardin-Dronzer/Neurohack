@@ -22,7 +22,9 @@ class Settings:
     short_term_window: int = 10
     # Retrieval: "rrf" fuses dense and BM25 rankings; "dense" and "lexical" exist for ablations.
     retrieval_mode: str = "rrf"
-    retrieval_top_k: int = 6
+    # The hybrid LoCoMo measured: 10 memories plus 5 raw turns. TURN_TOP_K=0 returns memories alone.
+    retrieval_top_k: int = 10
+    turn_top_k: int = 5
     retrieval_min_similarity: float | None = None
     lexical_top_k: int = 20
     semantic_top_k: int = 20
@@ -69,6 +71,7 @@ def get_settings() -> Settings:
         short_term_window=int(os.getenv("SHORT_TERM_WINDOW", str(defaults.short_term_window))),
         retrieval_mode=os.getenv("RETRIEVAL_MODE", defaults.retrieval_mode),
         retrieval_top_k=int(os.getenv("RETRIEVAL_TOP_K", str(defaults.retrieval_top_k))),
+        turn_top_k=int(os.getenv("TURN_TOP_K", str(defaults.turn_top_k))),
         retrieval_min_similarity=_env_optional_float("RETRIEVAL_MIN_SIMILARITY", defaults.retrieval_min_similarity),
         lexical_top_k=int(os.getenv("LEXICAL_TOP_K", str(defaults.lexical_top_k))),
         semantic_top_k=int(os.getenv("SEMANTIC_TOP_K", str(defaults.semantic_top_k))),

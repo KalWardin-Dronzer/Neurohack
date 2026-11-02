@@ -1,13 +1,17 @@
 from __future__ import annotations
 
-from fastapi import APIRouter, Query, Request
+from fastapi import APIRouter, HTTPException, Query, Request
 
 from app.evaluation import run_smoke_test
+from app.memory.context import render, serialize_memories, serialize_turns
 from app.schemas import (
     FlushResponse,
+    ForgetResponse,
     HealthResponse,
     MemoryRecord,
     MemoryListResponse,
+    RecallRequest,
+    RecallResponse,
     SmokeTestReport,
     TurnRequest,
     TurnResponse,
@@ -43,6 +47,33 @@ def list_memories(
     records = engine.list_memories(session_id=session_id, status=status, limit=limit)
     memories = [MemoryRecord(**record) for record in records]
     return MemoryListResponse(session_id=session_id, memories=memories)
+
+
+@router.post("/sessions/{session_id}/recall", response_model=RecallResponse)
+def recall(session_id: str, payload: RecallRequest, request: Request) -> RecallResponse:
+    """The hybrid context for a query, for clients that write their own prompt: memories plus earlier raw turns."""
+    engine = request.app.state.memory_engine
+    recalled = engine.recall(session_id, payload.query, memories=payload.memories, turns=payload.turns)
+    return RecallResponse(
+        session_id=session_id,
+        memories=serialize_memories(recalled.memories),
+        turns=serialize_turns(recalled.turns),
+        context=render(recalled),
+    )
+
+
+@router.delete("/sessions/{session_id}/memories/{memory_id}", response_model=ForgetResponse)
+def forget(session_id: str, memory_id: str, request: Request) -> ForgetResponse:
+    """Delete a memory and redact the turns it cites, so neither half of recall can return it."""
+    forgotten = request.app.state.memory_engine.forget(session_id, memory_id)
+    if forgotten is None:
+        raise HTTPException(status_code=404, detail=f"session {session_id} has no memory {memory_id}")
+    return ForgetResponse(
+        session_id=session_id,
+        memory_id=memory_id,
+        content=forgotten["memory"]["value"],
+        redacted_turns=forgotten["redacted_turns"],
+    )
 
 
 @router.post("/sessions/{session_id}/flush", response_model=FlushResponse)

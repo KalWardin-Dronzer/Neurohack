@@ -14,6 +14,8 @@ import numpy as np
 from .types import MemoryCandidate, MemoryStatus, MemoryType
 
 SCHEMA_VERSION = 2
+# A turn's text after a memory citing it is forgotten.
+FORGOTTEN = "[forgotten]"
 
 _STOPWORDS = frozenset(
     """
@@ -34,8 +36,9 @@ class MemoryStore:
         self._conn.row_factory = sqlite3.Row
         self._lock = threading.RLock()
         self._fts_enabled = False
-        # Bumped on every write so the retriever knows when its cached vector matrix is stale.
+        # Bumped on every write so the retrievers know when their cached vector matrices are stale.
         self._versions: dict[str, int] = {}
+        self._turn_versions: dict[str, int] = {}
         self._init_db()
 
     @staticmethod
@@ -64,7 +67,17 @@ class MemoryStore:
                     role TEXT NOT NULL,
                     content TEXT NOT NULL,
                     created_at TEXT NOT NULL,
+                    said_on TEXT,
                     UNIQUE(session_id, turn_id)
+                );
+
+                CREATE TABLE IF NOT EXISTS turn_embeddings (
+                    session_id TEXT NOT NULL,
+                    turn_id INTEGER NOT NULL,
+                    model_id TEXT NOT NULL,
+                    dim INTEGER NOT NULL,
+                    vector BLOB NOT NULL,
+                    PRIMARY KEY(session_id, turn_id)
                 );
 
                 CREATE TABLE IF NOT EXISTS memories (
@@ -120,15 +133,32 @@ class MemoryStore:
             except sqlite3.OperationalError:
                 self._fts_enabled = False
 
+            # Databases written before raw-turn retrieval lack the column; turn_embeddings was created above.
+            turn_columns = {row["name"] for row in self._conn.execute("PRAGMA table_info(turns)")}
+            if "said_on" not in turn_columns:
+                self._conn.execute("ALTER TABLE turns ADD COLUMN said_on TEXT")
+
             self._conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             self._conn.commit()
 
     def _touch(self, session_id: str) -> None:
         self._versions[session_id] = self._versions.get(session_id, 0) + 1
 
-    def memory_version(self, session_id: str) -> int:
+    def _external_version(self) -> int:
+        # Changes whenever another connection, such as the MCP server and the HTTP service sharing one file,
+        # commits; the counters only see writes made through this store.
+        return int(self._conn.execute("PRAGMA data_version").fetchone()[0])
+
+    def memory_version(self, session_id: str) -> tuple[int, int]:
         with self._lock:
-            return self._versions.get(session_id, 0)
+            return self._versions.get(session_id, 0), self._external_version()
+
+    def turn_version(self, session_id: str) -> tuple[int, int]:
+        with self._lock:
+            return self._turn_versions.get(session_id, 0), self._external_version()
+
+    def _touch_turns(self, session_id: str) -> None:
+        self._turn_versions[session_id] = self._turn_versions.get(session_id, 0) + 1
 
     def next_turn_id(self, session_id: str) -> int:
         with self._lock:
@@ -138,26 +168,67 @@ class MemoryStore:
             ).fetchone()
             return int(row["next_turn"])
 
-    def add_turn(self, session_id: str, turn_id: int, role: str, content: str) -> None:
+    def add_turn(self, session_id: str, turn_id: int, role: str, content: str, said_on: str | None = None) -> None:
         with self._lock:
             self._conn.execute(
                 """
-                INSERT INTO turns(session_id, turn_id, role, content, created_at)
-                VALUES (?, ?, ?, ?, ?)
+                INSERT INTO turns(session_id, turn_id, role, content, created_at, said_on)
+                VALUES (?, ?, ?, ?, ?, ?)
                 """,
-                (session_id, turn_id, role, content, self._now()),
+                (session_id, turn_id, role, content, self._now(), said_on),
             )
             self._conn.commit()
 
-    def add_turns_if_missing(self, session_id: str, turns: list[tuple[int, str, str]]) -> None:
+    def add_turns_if_missing(self, session_id: str, turns: list[tuple[int, str, str]], said_on: str | None = None) -> None:
         """Batch insert of (turn_id, role, content); turns already stored are left alone, so ingestion can resume."""
         with self._lock:
             now = self._now()
             self._conn.executemany(
-                "INSERT OR IGNORE INTO turns(session_id, turn_id, role, content, created_at) VALUES (?, ?, ?, ?, ?)",
-                [(session_id, turn_id, role, content, now) for turn_id, role, content in turns],
+                "INSERT OR IGNORE INTO turns(session_id, turn_id, role, content, created_at, said_on) VALUES (?, ?, ?, ?, ?, ?)",
+                [(session_id, turn_id, role, content, now, said_on) for turn_id, role, content in turns],
             )
             self._conn.commit()
+
+    def turns_needing_embedding(self, model_id: str) -> list[sqlite3.Row]:
+        """Turns with no embedding from `model_id`, in turn order. Assistant turns are never indexed: they restate
+        what the user said, or are generated and may be wrong."""
+        with self._lock:
+            return self._conn.execute(
+                """
+                SELECT t.session_id, t.turn_id, t.role, t.content
+                FROM turns t
+                LEFT JOIN turn_embeddings e ON e.session_id = t.session_id AND e.turn_id = t.turn_id
+                WHERE t.role != 'assistant' AND t.content != ? AND (e.turn_id IS NULL OR e.model_id != ?)
+                ORDER BY t.session_id, t.turn_id
+                """,
+                (FORGOTTEN, model_id),
+            ).fetchall()
+
+    def put_turn_embeddings(self, session_id: str, vectors: list[tuple[int, bytes]], model_id: str, dim: int) -> None:
+        with self._lock:
+            self._conn.executemany(
+                """
+                INSERT INTO turn_embeddings(session_id, turn_id, model_id, dim, vector) VALUES (?, ?, ?, ?, ?)
+                ON CONFLICT(session_id, turn_id) DO UPDATE SET
+                    model_id = excluded.model_id, dim = excluded.dim, vector = excluded.vector
+                """,
+                [(session_id, turn_id, model_id, dim, vector) for turn_id, vector in vectors],
+            )
+            self._touch_turns(session_id)
+            self._conn.commit()
+
+    def fetch_turns_with_vectors(self, session_id: str) -> list[sqlite3.Row]:
+        with self._lock:
+            return self._conn.execute(
+                """
+                SELECT t.turn_id, t.role, t.content, t.said_on, e.vector, e.model_id, e.dim
+                FROM turns t
+                JOIN turn_embeddings e ON e.session_id = t.session_id AND e.turn_id = t.turn_id
+                WHERE t.session_id = ?
+                ORDER BY t.turn_id
+                """,
+                (session_id,),
+            ).fetchall()
 
     def get_recent_turns(self, session_id: str, limit: int) -> list[dict[str, Any]]:
         with self._lock:
@@ -362,9 +433,10 @@ class MemoryStore:
         with self._lock:
             return self._conn.execute(
                 """
-                SELECT m.*, e.vector, e.model_id, e.dim
+                SELECT m.*, e.vector, e.model_id, e.dim, t.said_on
                 FROM memories m
                 LEFT JOIN memory_embeddings e ON e.memory_id = m.memory_id
+                LEFT JOIN turns t ON t.session_id = m.session_id AND t.turn_id = m.source_turn
                 WHERE m.session_id = ? AND m.status = ?
                 """,
                 (session_id, MemoryStatus.ACTIVE.value),
@@ -500,6 +572,51 @@ class MemoryStore:
             record["evidence"] = json.loads(record["evidence"])
             records.append(record)
         return records
+
+    def get_memories(self, session_id: str, memory_ids: list[str]) -> list[dict[str, Any]]:
+        """The given memories in the order given, each once; ids not in the session are skipped."""
+        if not memory_ids:
+            return []
+        placeholders = ",".join("?" for _ in memory_ids)
+        with self._lock:
+            rows = self._conn.execute(
+                f"SELECT * FROM memories WHERE session_id = ? AND memory_id IN ({placeholders})",
+                (session_id, *memory_ids),
+            ).fetchall()
+        by_id = {row["memory_id"]: {**dict(row), "evidence": json.loads(row["evidence"])} for row in rows}
+        return [by_id[memory_id] for memory_id in dict.fromkeys(memory_ids) if memory_id in by_id]
+
+    def forget_memory(self, session_id: str, memory_id: str) -> dict[str, Any] | None:
+        """Delete a memory and redact the turns it cites, so raw-turn retrieval cannot bring it back either.
+
+        Cited turns are those whose label `T<turn_id>` is in the memory's evidence; turns stored under an external
+        id, such as LoCoMo's `D1:3`, are not resolved. A redacted turn keeps its id, so ids are never reused, but
+        loses its text and embedding. Other memories drawn from it are kept. Returns the deleted memory and the
+        redacted turn ids, or None when the session has no such memory."""
+        with self._lock:
+            row = self._conn.execute(
+                "SELECT * FROM memories WHERE session_id = ? AND memory_id = ?", (session_id, memory_id)
+            ).fetchone()
+            if row is None:
+                return None
+            evidence = json.loads(row["evidence"])
+            cited = sorted({int(ref[1:]) for ref in evidence if re.fullmatch(r"T\d+", ref)})
+            self._conn.execute("DELETE FROM memory_embeddings WHERE memory_id = ?", (memory_id,))
+            if self._fts_enabled:
+                self._conn.execute("DELETE FROM memory_fts WHERE memory_id = ?", (memory_id,))
+            self._conn.execute("DELETE FROM memories WHERE memory_id = ?", (memory_id,))
+            redacted = []
+            for turn_id in cited:
+                self._conn.execute("DELETE FROM turn_embeddings WHERE session_id = ? AND turn_id = ?", (session_id, turn_id))
+                updated = self._conn.execute(
+                    "UPDATE turns SET content = ? WHERE session_id = ? AND turn_id = ?", (FORGOTTEN, session_id, turn_id)
+                ).rowcount
+                if updated:
+                    redacted.append(turn_id)
+            self._touch(session_id)
+            self._touch_turns(session_id)
+            self._conn.commit()
+        return {"memory": {**dict(row), "evidence": evidence}, "redacted_turns": redacted}
 
     def conflict_rate(self, session_id: str) -> float:
         """Share of fact keys holding more than one active value; events are excluded.

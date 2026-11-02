@@ -4,19 +4,15 @@ import logging
 
 from app.llm.client import LLMClient, LLMError
 
-from .types import MemoryMatch
+from .context import render
+from .types import MemoryMatch, Recall, TurnMatch
 
 logger = logging.getLogger(__name__)
 
 SYSTEM_PROMPT = (
-    "You are a helpful assistant with long-term memory of this user. Use the memories below implicitly; "
-    "do not list them unless asked. When a newer memory contradicts an older one, trust the newer one."
+    "You are a helpful assistant with long-term memory of this user. Use the memories and earlier turns below "
+    "implicitly; do not list them unless asked. When a newer memory contradicts an older one, trust the newer one."
 )
-
-
-def format_memory(memory: MemoryMatch) -> str:
-    when = f" (date: {memory.event_date})" if memory.event_date else ""
-    return f"- {memory.key.replace('_', ' ')}: {memory.value}{when}"
 
 
 class ResponseGenerator:
@@ -28,9 +24,11 @@ class ResponseGenerator:
         user_message: str,
         recent_turns: list[dict[str, str]],
         memories: list[MemoryMatch],
+        earlier_turns: list[TurnMatch] | None = None,
     ) -> str:
         if self._client is not None:
-            response = self._generate_with_llm(user_message=user_message, recent_turns=recent_turns, memories=memories)
+            recall = Recall(memories=memories, turns=earlier_turns or [])
+            response = self._generate_with_llm(user_message=user_message, recent_turns=recent_turns, recall=recall)
             if response:
                 return response
 
@@ -40,10 +38,10 @@ class ResponseGenerator:
         self,
         user_message: str,
         recent_turns: list[dict[str, str]],
-        memories: list[MemoryMatch],
+        recall: Recall,
     ) -> str | None:
-        memory_context = "\n".join(format_memory(memory) for memory in memories) or "- none"
-        messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\nRelevant long-term memory:\n{memory_context}"}]
+        memory_context = render(recall) or "Memories:\n- none"
+        messages = [{"role": "system", "content": f"{SYSTEM_PROMPT}\n\n{memory_context}"}]
         for turn in recent_turns[-8:]:
             messages.append({"role": turn["role"], "content": turn["content"]})
         # The store already holds the current turn, so it usually closes recent_turns; v1 sent it twice.

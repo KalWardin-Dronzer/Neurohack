@@ -10,11 +10,16 @@ from app.config import Settings
 
 from .embedder import EmbeddingModel
 from .store import MemoryStore
-from .types import MemoryMatch
+from .types import MemoryMatch, TurnMatch
 
 logger = logging.getLogger(__name__)
 
 RETRIEVAL_MODES = ("rrf", "dense", "lexical")
+
+
+def turn_text(role: str, content: str) -> str:
+    """The text a raw turn is embedded as, the same as the benchmark's raw-turn RAG embeds it."""
+    return f"{role}: {content}"
 
 
 def reciprocal_rank_fusion(rankings: Sequence[Sequence[str]], k: int = 60) -> dict[str, float]:
@@ -37,7 +42,7 @@ class HybridRetriever:
         self.settings = settings
         self.store = store
         self.embedder = embedder
-        self._matrix_cache: dict[str, tuple[int, list[str], np.ndarray]] = {}
+        self._matrix_cache: dict[str, tuple[tuple[int, int], list[str], np.ndarray]] = {}
 
     def retrieve(
         self,
@@ -140,4 +145,55 @@ class HybridRetriever:
             evidence=tuple(json.loads(row["evidence"])),
             dense_similarity=similarity,
             lexical_score=lexical,
+            said_on=row["said_on"],
         )
+
+
+class TurnRetriever:
+    """Dense search over a session's raw turns, ranked exactly as the benchmark's raw-turn RAG ranks them.
+
+    The hybrid that LoCoMo measured adds these turns to the memories, because a memory keeps the gist and can drop
+    the detail a question asks for.
+    """
+
+    def __init__(self, store: MemoryStore, embedder: EmbeddingModel) -> None:
+        self.store = store
+        self.embedder = embedder
+        self._cache: dict[str, tuple[tuple[int, int], list[Any], np.ndarray]] = {}
+
+    def retrieve(self, session_id: str, query: str, top_k: int, before_turn: int | None = None) -> list[TurnMatch]:
+        """The top_k turns most similar to the query; with `before_turn`, only turns older than it."""
+        if top_k <= 0:
+            return []
+        rows, matrix = self._session_matrix(session_id)
+        if not rows:
+            return []
+        scores = matrix @ self.embedder.embed_query(query)
+        matches: list[TurnMatch] = []
+        for position in np.argsort(-scores):
+            row = rows[int(position)]
+            if before_turn is not None and int(row["turn_id"]) >= before_turn:
+                continue
+            matches.append(
+                TurnMatch(
+                    turn_id=int(row["turn_id"]),
+                    role=row["role"],
+                    content=row["content"],
+                    similarity=float(scores[position]),
+                    said_on=row["said_on"],
+                )
+            )
+            if len(matches) >= top_k:
+                break
+        return matches
+
+    def _session_matrix(self, session_id: str) -> tuple[list[Any], np.ndarray]:
+        version = self.store.turn_version(session_id)
+        cached = self._cache.get(session_id)
+        if cached is not None and cached[0] == version:
+            return cached[1], cached[2]
+        rows = [row for row in self.store.fetch_turns_with_vectors(session_id) if row["model_id"] == self.embedder.model_id]
+        vectors = [EmbeddingModel.from_bytes(row["vector"], int(row["dim"])) for row in rows]
+        matrix = np.stack(vectors) if vectors else np.zeros((0, self.embedder.dim), dtype=np.float32)
+        self._cache[session_id] = (version, rows, matrix)
+        return rows, matrix

@@ -257,12 +257,15 @@ def test_hybrid_adds_raw_turns_to_the_memories(tmp_path) -> None:
     turns.prepare(conversation)
     question = Question("c:q0", "c", "What is the cat called?", "Tom", 4, ("D1:1",))
     try:
-        hybrid = MemoryPlusTurns(store, turns, memories=2, raw_turns=1).retrieve(conversation, question, 10)
+        hybrid = MemoryPlusTurns(store, memories=2, raw_turns=3).retrieve(conversation, question, 10)
     finally:
         store.close()
+    rag = turns.retrieve(conversation, question, 3)
 
-    assert len(hybrid.items) == 3
-    assert sum(item.text.startswith("- ") for item in hybrid.items) == 2  # memories, then one raw turn
+    assert len(hybrid.items) == 5
+    assert sum(item.text.startswith("- ") for item in hybrid.items) == 2  # memories, then three raw turns
+    # The service's raw-turn half ranks and renders turns exactly as raw-turn RAG does.
+    assert [(item.text, item.refs) for item in hybrid.items[2:]] == [(item.text, item.refs) for item in rag.items]
 
 
 def test_paired_differences_follow_the_declared_pairs_and_categories() -> None:

@@ -75,6 +75,28 @@ class MemoryMatch:
     evidence: tuple[str, ...] = ()
     dense_similarity: Optional[float] = None
     lexical_score: Optional[float] = None
+    # When the turn the memory was extracted from was said, if known.
+    said_on: Optional[str] = None
+
+
+@dataclass(slots=True)
+class TurnMatch:
+    """A raw turn returned by dense search over the conversation."""
+
+    turn_id: int
+    role: str
+    content: str
+    similarity: float
+    said_on: Optional[str] = None
+
+
+@dataclass(slots=True)
+class Recall:
+    """What the hybrid retrieves for a query: the top memories, for dates and consolidated facts, and the top raw
+    turns, for the details a memory drops. LoCoMo measured this pairing; see docs/DESIGN.md."""
+
+    memories: list[MemoryMatch]
+    turns: list[TurnMatch]
 
 
 @dataclass(slots=True)

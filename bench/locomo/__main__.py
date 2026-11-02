@@ -300,7 +300,7 @@ def cmd_qa(args) -> int:
             "v2": lambda c, q, k: v2.retrieve(c, q, k, mode="rrf"),
             # Two fixes for memories that drop details: quote the turns each memory cites, or add raw turns.
             "v2_turns": lambda c, q, k: v2.retrieve(c, q, k, mode="rrf", with_turns=True),
-            "v2_hybrid": MemoryPlusTurns(v2, turn_rag).retrieve,
+            "v2_hybrid": MemoryPlusTurns(v2).retrieve,
         }
         if args.systems:
             wanted = args.systems.split(",")

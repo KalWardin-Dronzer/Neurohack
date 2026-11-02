@@ -17,7 +17,17 @@ class ActiveMemoryInfluence(BaseModel):
     last_used_turn: Optional[int] = None
     key: Optional[str] = None
     value: Optional[str] = None
+    event_date: Optional[str] = None
+    evidence: list[str] = Field(default_factory=list)
     score: Optional[float] = None
+
+
+class RecalledTurn(BaseModel):
+    turn_id: int
+    role: str
+    content: str
+    said_on: Optional[str] = None
+    similarity: float
 
 
 class MemoryRecord(BaseModel):
@@ -46,6 +56,27 @@ class TurnResponse(BaseModel):
     response_generated: bool
     latency_ms: float
     active_memories: list[ActiveMemoryInfluence] = Field(default_factory=list)
+    recalled_turns: list[RecalledTurn] = Field(default_factory=list)
+
+
+class RecallRequest(BaseModel):
+    query: str = Field(min_length=1, max_length=4000)
+    memories: Optional[int] = Field(default=None, ge=0, le=100)
+    turns: Optional[int] = Field(default=None, ge=0, le=100)
+
+
+class RecallResponse(BaseModel):
+    session_id: str
+    memories: list[ActiveMemoryInfluence]
+    turns: list[RecalledTurn]
+    context: str
+
+
+class ForgetResponse(BaseModel):
+    session_id: str
+    memory_id: str
+    content: str
+    redacted_turns: list[int]
 
 
 class MemoryListResponse(BaseModel):

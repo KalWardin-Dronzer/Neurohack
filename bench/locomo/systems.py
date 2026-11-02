@@ -16,7 +16,7 @@ from app.memory.embedder import EmbeddingModel
 from app.memory.extractor import Extractor, LLMExtractor
 from app.memory.retriever import HybridRetriever
 from app.memory.service import MemoryEngine
-from app.memory.types import TurnInput
+from app.memory.types import MemoryMatch, TurnInput, TurnMatch
 
 from .data import Conversation, Question, Turn
 from .legacy_v1.config import Settings as V1Settings
@@ -331,14 +331,12 @@ class MemoryV2:
         rank_ms = (perf_counter() - started) * 1000
         items, quoted = [], set()
         for match in matches:
-            said = conversation.session_of(turns_by_index[match.source_turn].ref).date_label
-            when = f"date: {match.event_date}; said {said}" if match.event_date else f"said {said}"
-            text = f"- {match.value} ({when})"
+            item = memory_item(conversation, match, turns_by_index)
             if with_turns:
                 cited = [turns_by_ref[ref] for ref in match.evidence if ref in turns_by_ref and ref not in quoted]
                 quoted.update(turn.ref for turn in cited)
-                text += "".join(f"\n  > {turn.speaker}: {turn.text}" for turn in cited)
-            items.append(ContextItem(text=text, refs=match.evidence, order=match.source_turn, similarity=match.dense_similarity))
+                item.text += "".join(f"\n  > {turn.speaker}: {turn.text}" for turn in cited)
+            items.append(item)
         return Retrieved(items=items, rank_ms=rank_ms)
 
     def close(self) -> None:
@@ -346,23 +344,43 @@ class MemoryV2:
             engine.shutdown()
 
 
+def memory_item(conversation: Conversation, match: MemoryMatch, turns_by_index: dict[int, Turn]) -> ContextItem:
+    said = conversation.session_of(turns_by_index[match.source_turn].ref).date_label
+    when = f"date: {match.event_date}; said {said}" if match.event_date else f"said {said}"
+    return ContextItem(text=f"- {match.value} ({when})", refs=match.evidence, order=match.source_turn, similarity=match.dense_similarity)
+
+
+def turn_item(conversation: Conversation, match: TurnMatch, turns_by_index: dict[int, Turn]) -> ContextItem:
+    """A raw turn as TurnRAG renders it, so the two systems' turns are directly comparable."""
+    turn = turns_by_index[match.turn_id]
+    label = conversation.session_of(turn.ref).date_label
+    return ContextItem(text=f"[{label}] {match.role}: {match.content}", refs=(turn.ref,), order=turn.index, similarity=match.similarity)
+
+
 class MemoryPlusTurns:
     """The top memories, for dates and consolidated facts, plus the top raw turns, for the details a memory drops.
 
+    It runs the service's own retrieval, MemoryEngine.recall, so what is measured here is what the service returns.
     It ignores the k it is asked for and uses its own budget: 10 memories and 5 turns cost about as many context
     tokens as raw-turn RAG's 10 turns, so the comparison with it is at equal context.
     """
 
     name = "v2_hybrid"
 
-    def __init__(self, memory: MemoryV2, turns: TurnRAG, memories: int = 10, raw_turns: int = 5) -> None:
-        self.memory, self.turns = memory, turns
+    def __init__(self, memory: MemoryV2, memories: int = 10, raw_turns: int = 5) -> None:
+        self.memory = memory
         self.memories, self.raw_turns = memories, raw_turns
 
     def retrieve(self, conversation: Conversation, question: Question, k: int) -> Retrieved:
-        recalled = self.memory.retrieve(conversation, question, self.memories)
-        quoted = self.turns.retrieve(conversation, question, self.raw_turns)
-        return Retrieved(items=recalled.items[: self.memories] + quoted.items[: self.raw_turns], rank_ms=recalled.rank_ms + quoted.rank_ms)
+        engine = self.memory.engines[conversation.sample_id]
+        self.memory.embedder.embed_query(question.text)  # warm the shared cache so ranking time excludes embedding
+        turns_by_index = {turn.index: turn for turn in conversation.turns}
+        started = perf_counter()
+        recalled = engine.recall(conversation.sample_id, question.text, memories=self.memories, turns=self.raw_turns)
+        rank_ms = (perf_counter() - started) * 1000
+        items = [memory_item(conversation, match, turns_by_index) for match in recalled.memories]
+        items += [turn_item(conversation, match, turns_by_index) for match in recalled.turns]
+        return Retrieved(items=items, rank_ms=rank_ms)
 
 
 class _NoExtraction:
