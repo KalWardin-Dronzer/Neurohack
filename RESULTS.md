@@ -109,6 +109,17 @@ Hybrid minus raw-turn RAG: +13.5 pts [+6.5, +20.5]. **Confirmed.**
 
 Subset questions per category: multi-hop 37, temporal 42, open-domain 12, single-hop 109.
 
+## Judge validation
+
+The judge was checked against blind hand labels on 50 confirmation-run answers (25 hybrid, 25 raw-turn RAG): agreement 94%, Cohen's kappa 0.87. It agreed on 100% of hybrid answers and 88% of RAG answers, scoring RAG 60% against 56% by hand and the hybrid 72% against 72%, so it did not favour the hybrid.
+
+| System | Labelled | Agreement | Judge says correct | Hand label says correct |
+|---|---|---|---|---|
+| Raw-turn RAG (dense top-k over turns) | 25 | 88% | 60% | 56% |
+| v2 hybrid (10 memories + 5 raw turns) | 25 | 100% | 72% | 72% |
+
+Disagreements: the judge said CORRECT where the hand label said WRONG 2 times, and the reverse 1 time(s). Labels are in bench/runs (not distributed, because they quote LoCoMo).
+
 ## Distilled local extractor
 
 `Qwen/Qwen3.5-0.8B` (revision `2fc0636`) was fine-tuned with LoRA on the teacher's extractions from 151 sessions of 6 conversations, with conv-48 for validation. The table covers the held-out conversations conv-41, conv-44, conv-47: 91 sessions and 425 questions with evidence, which no model was tuned on. Every row stores memories in the same v2 engine and retrieves them with the same RRF settings; only the extractor differs. The local models ran on an NVIDIA GeForce RTX 3050 Laptop GPU through `distill.serve` (transformers, bf16, greedy decoding, no output constraints) or, exported, through Ollama 0.40.13 (a Q8_0 GGUF from llama.cpp's converter, greedy decoding, thinking off; in rows marked constrained, Ollama also constrains decoding to the JSON schema).

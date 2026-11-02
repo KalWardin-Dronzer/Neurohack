@@ -265,7 +265,10 @@ the questions that cite it. Every table also reports the other nine conversation
 comparison the README quotes. The file is blind (no system names, no judge verdicts; those go to a separate key),
 so the labeller cannot anchor on the judge. `judge-agreement` reports agreement and Cohen's kappa overall and per
 system: a judge more lenient with one system's answers would show up as a gap between the two. v1 is never sampled,
-because nearly all its answers are "not mentioned", which any judge grades correctly.
+because nearly all its answers are "not mentioned", which any judge grades correctly. **Result:** on the 50 hand-labelled answers the judge agreed 94% of the time (Cohen's kappa 0.87): 100% on the
+hybrid's answers and 88% on RAG's. All three disagreements were RAG answers, and in two of them the judge was the more
+lenient (it accepted "Not mentioned" for "two times"), so on this sample the judge, if anything, understates the
+hybrid's lead. Fifty labels give a wide interval, so this rules out a large judge bias, not a small one.
 
 ## Distilling the extractor
 

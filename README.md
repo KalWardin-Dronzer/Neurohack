@@ -27,6 +27,8 @@ Recall covers all 1,535 questions with annotated evidence. QA covers a stratifie
 
 The two v2 variants were chosen on these same questions. On 200 fresh questions (seed 2027), under a criterion declared before the run, the hybrid scored 68.5% [62.0, 75.0] against 55.0% [48.5, 62.0] for raw-turn RAG, a paired difference of +13.5 pts [+6.5, +20.5], which confirms the gain. Details are in [RESULTS.md](RESULTS.md).
 
+The judge was checked against blind hand labels on 50 confirmation-run answers (25 hybrid, 25 raw-turn RAG): agreement 94%, Cohen's kappa 0.87. It agreed on 100% of hybrid answers and 88% of RAG answers, scoring RAG 60% against 56% by hand and the hybrid 72% against 72%, so it did not favour the hybrid.
+
 ### A distilled extractor that runs on a laptop
 
 | Extractor | Evidence recall@10 on held-out conversations | Context tokens at k = 10 | Runs on |

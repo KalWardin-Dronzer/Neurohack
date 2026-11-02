@@ -1,0 +1,21 @@
+{
+ "labelled": 50,
+ "agreement": 0.94,
+ "cohens_kappa": 0.86819,
+ "by_system": {
+  "turn_rag": {
+   "labelled": 25,
+   "agreement": 0.88,
+   "judge_accuracy": 0.6,
+   "human_accuracy": 0.56
+  },
+  "v2_hybrid": {
+   "labelled": 25,
+   "agreement": 1.0,
+   "judge_accuracy": 0.72,
+   "human_accuracy": 0.72
+  }
+ },
+ "judge_says_correct_human_says_wrong": 2,
+ "judge_says_wrong_human_says_correct": 1
+}

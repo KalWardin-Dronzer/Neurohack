@@ -9,6 +9,7 @@ QA_PATH = RESULTS_DIR / "locomo_qa.json"
 CONFIRM_PATH = RESULTS_DIR / "locomo_qa_confirm.json"
 CONFIRM_PAIR = "v2_hybrid_minus_turn_rag"
 DISTILL_PATH = RESULTS_DIR / "locomo_distill.json"
+JUDGE_PATH = RESULTS_DIR / "judge_agreement.json"
 RESULTS_MD = Path("RESULTS.md")
 README = Path("README.md")
 README_START, README_END = "<!-- RESULTS:START -->", "<!-- RESULTS:END -->"
@@ -320,8 +321,33 @@ def _distill_section(data: dict) -> list[str]:
     return lines
 
 
+def judge_sentence(judge: dict) -> str:
+    rag, hybrid = judge["by_system"]["turn_rag"], judge["by_system"]["v2_hybrid"]
+    lean = (hybrid["judge_accuracy"] - hybrid["human_accuracy"]) - (rag["judge_accuracy"] - rag["human_accuracy"])
+    verdict = "so it did not favour the hybrid" if lean <= 0 else "so it was more lenient with the hybrid"
+    return (f"The judge was checked against blind hand labels on {judge['labelled']} confirmation-run answers "
+            f"({hybrid['labelled']} hybrid, {rag['labelled']} raw-turn RAG): agreement {judge['agreement']:.0%}, "
+            f"Cohen's kappa {judge['cohens_kappa']:.2f}. It agreed on {hybrid['agreement']:.0%} of hybrid answers and "
+            f"{rag['agreement']:.0%} of RAG answers, scoring RAG {rag['judge_accuracy']:.0%} against "
+            f"{rag['human_accuracy']:.0%} by hand and the hybrid {hybrid['judge_accuracy']:.0%} against "
+            f"{hybrid['human_accuracy']:.0%}, {verdict}.")
+
+
+def _judge_section(judge: dict) -> list[str]:
+    lines = ["## Judge validation", "", judge_sentence(judge), "",
+             "| System | Labelled | Agreement | Judge says correct | Hand label says correct |", "|---|---|---|---|---|"]
+    for name, s in judge["by_system"].items():
+        lines.append(f"| {LABELS[name]} | {s['labelled']} | {s['agreement']:.0%} | {s['judge_accuracy']:.0%} "
+                     f"| {s['human_accuracy']:.0%} |")
+    lines += ["", f"Disagreements: the judge said CORRECT where the hand label said WRONG "
+              f"{judge['judge_says_correct_human_says_wrong']} times, and the reverse "
+              f"{judge['judge_says_wrong_human_says_correct']} time(s). Labels are in bench/runs (not distributed, "
+              "because they quote LoCoMo).", ""]
+    return lines
+
+
 def render(retrieval: dict | None, qa: dict | None, distill: dict | None = None,
-           confirm: dict | None = None) -> str:
+           confirm: dict | None = None, judge: dict | None = None) -> str:
     lines = [
         "# LoCoMo results",
         "",
@@ -346,6 +372,8 @@ def render(retrieval: dict | None, qa: dict | None, distill: dict | None = None,
         lines += _qa_section(qa)
     if confirm:
         lines += _confirm_section(confirm)
+    if judge:
+        lines += _judge_section(judge)
     if distill:
         lines += _distill_section(distill)
     if source:
@@ -399,12 +427,12 @@ def _readme_distill(distill: dict) -> list[str]:
 
 
 def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict | None = None,
-                          confirm: dict | None = None) -> str:
+                          confirm: dict | None = None, judge: dict | None = None) -> str:
     """The README's headline table, built from the same estimates as RESULTS.md so the two cannot drift."""
     if not retrieval:
         return "*LoCoMo results appear here once `python -m bench.locomo report` has run.*"
     if distill:
-        return "\n".join([render_readme_summary(retrieval, qa, confirm=confirm), *_readme_distill(distill)])
+        return "\n".join([render_readme_summary(retrieval, qa, confirm=confirm, judge=judge), *_readme_distill(distill)])
     if not qa:
         lines = [
             "## Results on LoCoMo",
@@ -456,6 +484,8 @@ def render_readme_summary(retrieval: dict | None, qa: dict | None, distill: dict
             f"{signed_pct(confirm['paired_accuracy_differences'][CONFIRM_PAIR])}, {outcome}. Details are in "
             "[RESULTS.md](RESULTS.md).",
         ]
+        if judge:
+            lines += ["", judge_sentence(judge)]
     elif {"v2_turns", "v2_hybrid"} & set(qa["summary"]):
         lines += [
             "",
@@ -474,10 +504,10 @@ def _with_readme_summary(readme: str, summary: str) -> str:
 
 def write_or_check(check: bool) -> int:
     retrieval, qa, distill = _load(RETRIEVAL_PATH), _load(QA_PATH), _load(DISTILL_PATH)
-    confirm = _load(CONFIRM_PATH)
-    results_text = render(retrieval, qa, distill, confirm)
+    confirm, judge = _load(CONFIRM_PATH), _load(JUDGE_PATH)
+    results_text = render(retrieval, qa, distill, confirm, judge)
     readme_now = README.read_text(encoding="utf-8").replace("\r\n", "\n")
-    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa, distill, confirm))
+    readme_text = _with_readme_summary(readme_now, render_readme_summary(retrieval, qa, distill, confirm, judge))
     if check:
         current = RESULTS_MD.read_text(encoding="utf-8").replace("\r\n", "\n") if RESULTS_MD.exists() else ""
         stale = [name for name, ok in (("RESULTS.md", current == results_text), ("README.md", readme_now == readme_text)) if not ok]
